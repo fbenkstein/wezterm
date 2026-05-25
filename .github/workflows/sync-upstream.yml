@@ -28,6 +28,7 @@ jobs:
       - name: Build and push merge commit
         working-directory: repo.git
         run: |
+          set -x
           GIT_INDEX_FILE=$(mktemp)
           export GIT_INDEX_FILE
 
@@ -35,7 +36,8 @@ jobs:
           git read-tree upstream/main
 
           # Replace .github entirely with the version from dot-github
-          git rm --cached -r -- .github
+          # (git rm --cached requires a work tree even for bare repos; use update-index instead)
+          git ls-files -z -- .github | xargs -0 git update-index --force-remove
           git read-tree --prefix=.github/ origin/dot-github:.github
 
           TREE=$(git write-tree)
