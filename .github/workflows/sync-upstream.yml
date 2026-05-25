@@ -17,15 +17,13 @@ jobs:
       GIT_COMMITTER_NAME: github-actions[bot]
       GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
     steps:
-      - name: Clone fork as bare repo
-        run: git clone --bare "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" repo.git
-
-      - name: Fetch upstream and dot-github
-        working-directory: repo.git
+      - name: Init bare repo and fetch
         run: |
-          git remote add upstream https://github.com/wez/wezterm.git
-          git fetch upstream refs/heads/main:refs/remotes/upstream/main
-          git fetch origin refs/heads/dot-github:refs/remotes/origin/dot-github
+          git init --bare repo.git
+          git -C repo.git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git -C repo.git remote add upstream https://github.com/wez/wezterm.git
+          git -C repo.git fetch origin refs/heads/dot-github:refs/remotes/origin/dot-github
+          git -C repo.git fetch upstream refs/heads/main:refs/remotes/upstream/main
 
       - name: Build and push merge commit
         working-directory: repo.git
