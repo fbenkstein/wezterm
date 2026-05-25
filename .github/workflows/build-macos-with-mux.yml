@@ -102,4 +102,25 @@ jobs:
         with:
           name: macos-with-mux
           path: WezTerm-macos-*+mux.zip
+          retention-days: 1
+
+  custom-install:
+    needs: combine
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-with-mux
+          path: macos-with-mux/
+
+      - name: Add installer
+        run: bash .github/scripts/add-installer.sh macos-with-mux/WezTerm-macos-*+mux.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-with-mux-custom-install
+          path: WezTerm-macos-*+mux+custom-install.zip
           retention-days: 5

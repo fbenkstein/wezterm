@@ -1,5 +1,5 @@
 #!/bin/bash
-# Injects static Linux mux server binaries and the installer into a macOS app zip.
+# Injects static Linux mux server binaries into a macOS app zip.
 # Usage: combine-macos.sh <app-zip> <mux-binaries-dir>
 #
 # <mux-binaries-dir> must contain subdirectories named after Rust target triples,
@@ -7,9 +7,6 @@
 #   mux-binaries/
 #     x86_64-unknown-linux-musl/wezterm-mux-server
 #     aarch64-unknown-linux-musl/wezterm-mux-server
-#
-# The installer binary is read from .github/installer/install-wezterm relative
-# to the repository root (i.e. the working directory when called from CI).
 #
 # Produces <basename>+mux.zip in the current directory.
 set -euo pipefail
@@ -31,9 +28,6 @@ for target_dir in "$MUX_DIR"/*/; do
     mkdir -p "$MUX_DEST/$target"
     install -m 755 "$target_dir/wezterm-mux-server" "$MUX_DEST/$target/wezterm-mux-server"
 done
-
-ZIPDIR=$(find "$WORK" -maxdepth 1 -mindepth 1 -type d)
-install -m 755 .github/installer/install-wezterm "$ZIPDIR/install-wezterm"
 
 BASENAME=$(basename "$APP_ZIP" .zip)
 OUT="$(pwd)/${BASENAME}+mux.zip"
