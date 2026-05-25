@@ -11,34 +11,40 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
     steps:
-      - name: Checkout fork main
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Clone fork as bare repo
+        run: git clone --bare "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" repo.git
 
-      - name: Configure git
+      - name: Fetch upstream and dot-github
+        working-directory: repo.git
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Add upstream remote
-        run: git remote add upstream https://github.com/wez/wezterm.git
-
-      - name: Fetch upstream main and dot-github branch
-        run: |
+          git remote add upstream https://github.com/wez/wezterm.git
           git fetch upstream main
           git fetch origin dot-github
 
-      - name: Merge upstream main and restore custom .github
-        # --no-commit leaves the merge staged so we can overlay .github before committing
+      - name: Build and push merge commit
+        working-directory: repo.git
         run: |
-          git merge upstream/main --no-commit --no-edit -X theirs || true
-          git rm -rf .github/
-          git checkout origin/dot-github -- .github/
-          git commit -m "chore: sync with upstream [skip ci]"
+          GIT_INDEX_FILE=$(mktemp)
+          export GIT_INDEX_FILE
 
-      - name: Push to fork main
-        run: git push origin main
+          # Populate temp index from upstream/main tree
+          git read-tree upstream/main
+
+          # Replace .github entirely with the version from dot-github
+          git rm --cached -r -- .github
+          git read-tree --prefix=.github/ origin/dot-github:.github
+
+          TREE=$(git write-tree)
+          COMMIT=$(git commit-tree "$TREE" \
+            -p "$(git rev-parse upstream/main)" \
+            -p "$(git rev-parse origin/dot-github)" \
+            -m "chore: sync with upstream [skip ci]")
+
+          # Force push: fork/main is always exactly one merge commit ahead of upstream/main
+          git push origin "$COMMIT:refs/heads/main" --force
