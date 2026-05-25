@@ -1,3 +1,10 @@
+# Keeps this fork's main branch in sync with upstream (wez/wezterm) while
+# preserving a custom .github/ from the orphan `dot-github` branch.
+#
+# Strategy: build the merge commit with pure git plumbing in a bare repo —
+# no checkout required. The result is always exactly one commit on top of
+# upstream/main (force-pushed), so fork history stays clean and
+# `git log --first-parent` shows unmodified upstream history.
 name: Sync with upstream
 
 on:
