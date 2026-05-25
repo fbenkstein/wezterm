@@ -4,21 +4,6 @@
 name: Build macOS
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '**/*.rs'
-      - '**/Cargo.lock'
-      - '**/Cargo.toml'
-      - '.cargo/config.toml'
-      - 'assets/fonts/**'
-      - 'assets/icon/*'
-      - 'assets/macos/**'
-      - 'assets/shell-completion/**'
-      - 'assets/shell-integration/**'
-      - 'termwiz/data/wezterm.terminfo'
-      - '.github/scripts/build-macos.sh'
-      - '.github/workflows/build-macos.yml'
   workflow_dispatch:
 
 jobs:
