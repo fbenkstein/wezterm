@@ -29,18 +29,15 @@ jobs:
         working-directory: repo.git
         run: |
           set -x
-          GIT_INDEX_FILE=$(mktemp)
-          export GIT_INDEX_FILE
 
-          # Populate temp index from upstream/main tree
-          git read-tree upstream/main
+          # Build tree: upstream/main root entries with .github replaced from dot-github
+          GITHUB_TREE=$(git rev-parse origin/dot-github:.github)
+          TREE=$(
+            { git ls-tree upstream/main | grep -v $'\t\.github$'
+              printf '040000 tree %s\t.github\n' "$GITHUB_TREE"
+            } | git mktree
+          )
 
-          # Replace .github entirely with the version from dot-github
-          # (git rm --cached requires a work tree even for bare repos; use update-index instead)
-          git ls-tree -r -z --name-only upstream/main -- .github | xargs -0 git update-index --force-remove
-          git read-tree --prefix=.github/ origin/dot-github:.github
-
-          TREE=$(git write-tree)
           COMMIT=$(git commit-tree "$TREE" \
             -p "$(git rev-parse upstream/main)" \
             -p "$(git rev-parse origin/dot-github)" \
