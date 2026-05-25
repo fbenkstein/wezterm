@@ -1,3 +1,13 @@
+// TODO(upstream-pr): gate this module and SubCmd::Proxy with #[cfg(unix)];
+//   the mux server uses TLS on Windows, not unix domain sockets.
+// TODO(upstream-pr): redirect spawned daemon's stdin/stdout to /dev/null
+//   to prevent accidental writes to the SSH tunnel file descriptors.
+// TODO(upstream-pr): replace `loop { sleep }` with a cleaner park pattern.
+// TODO(upstream-pr): add integration test (start server, connect via proxy subcommand).
+// TODO(upstream-pr): add changelog entry and clarify relationship with `wezterm cli proxy`.
+// TODO(future): switch to bind-first / socket-activation pattern to eliminate
+//   timing-based retry delays (see design discussion in git log).
+
 use anyhow::Context;
 use codec::{Pdu, SetClientId};
 use config::ConfigHandle;
