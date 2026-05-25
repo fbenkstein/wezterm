@@ -1,0 +1,16 @@
+#!/bin/bash
+# Placeholder: to be replaced with a signed Rust binary.
+#
+# The real installer will:
+#   1. Remove quarantine from WezTerm.app
+#   2. Sign it with the Developer ID certificate from the local Keychain
+#   3. Optionally notarize and staple
+#   4. Install to /Applications
+set -euo pipefail
+
+echo "WezTerm installer not yet available."
+echo "To install manually, run from this directory:"
+echo "  xattr -cr WezTerm.app"
+echo "  codesign --force --options runtime --deep --sign \"-\" WezTerm.app"
+echo "  cp -r WezTerm.app /Applications/"
+exit 1
