@@ -36,6 +36,7 @@ jobs:
         # --no-commit leaves the merge staged so we can overlay .github before committing
         run: |
           git merge upstream/main --no-commit --no-edit -X theirs || true
+          git rm -rf .github/
           git checkout origin/dot-github -- .github/
           git commit -m "chore: sync with upstream [skip ci]"
 
