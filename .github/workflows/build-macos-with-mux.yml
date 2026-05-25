@@ -1,0 +1,105 @@
+# Builds the macOS app and static Linux mux server binaries, then combines them
+# into a single +mux artifact. All jobs reuse the same scripts as the individual
+# build workflows; artifacts are shared within the run via upload/download.
+name: Build macOS app with mux
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-app:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '10.12'
+      CARGO_INCREMENTAL: '0'
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust targets
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache Cargo vendor
+        id: vendor-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            .cargo/config
+          key: cargo-vendor-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Vendor dependencies
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
+        run: cargo vendor --locked --versioned-dirs >> .cargo/config
+
+      - name: Build and package
+        run: bash .github/scripts/build-macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: WezTerm-macos-*.zip
+          retention-days: 1
+
+  mux-linux:
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: taiki-e/install-action@cross
+
+      - name: Build
+        run: bash .github/scripts/build-mux-linux.sh ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mux-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/wezterm-mux-server
+          retention-days: 1
+
+  combine:
+    needs: [macos-app, mux-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-app
+          path: macos-app/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mux-x86_64-unknown-linux-musl
+          path: mux-binaries/x86_64-unknown-linux-musl/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mux-aarch64-unknown-linux-musl
+          path: mux-binaries/aarch64-unknown-linux-musl/
+
+      - name: Combine
+        run: bash .github/scripts/combine-macos.sh macos-app/WezTerm-macos-*.zip mux-binaries/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-with-mux
+          path: WezTerm-macos-*+mux.zip
+          retention-days: 5

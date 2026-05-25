@@ -10,6 +10,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 cross build --release --locked --target "$TARGET" -p wezterm-mux-server
 
-BIN="$REPO_ROOT/target/$TARGET/release/wezterm-mux-server"
+BIN="target/$TARGET/release/wezterm-mux-server"
 file "$BIN"
 echo "Built: $BIN"
