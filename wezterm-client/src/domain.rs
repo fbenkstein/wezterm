@@ -1,4 +1,4 @@
-use crate::client::Client;
+use crate::client::{Client, IncompatibleVersionError, MuxServerProcessFailed};
 use crate::pane::ClientPane;
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
@@ -10,7 +10,7 @@ use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
 use mux::tab::{SplitRequest, Tab, TabId};
 use mux::window::WindowId;
-use mux::{Mux, MuxNotification};
+use mux::{Mux, MuxNotification, MuxServerStartFailedReason};
 use portable_pty::CommandBuilder;
 use promise::spawn::spawn_into_new_thread;
 use std::collections::{HashMap, HashSet};
@@ -980,6 +980,20 @@ impl Domain for ClientDomain {
         .await
         .map_err(|e| {
             ui.output_str(&format!("Error during attach: {:#}\n", e));
+            let reason = if e.root_cause().is::<IncompatibleVersionError>() {
+                Some(MuxServerStartFailedReason::VersionMismatch)
+            } else if e.root_cause().is::<MuxServerProcessFailed>() {
+                Some(MuxServerStartFailedReason::ProcessFailed)
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                Mux::notify_from_any_thread(MuxNotification::MuxServerStartFailed {
+                    domain_id,
+                    reason,
+                    message: format!("{:#}", e),
+                });
+            }
             e
         })?;
 

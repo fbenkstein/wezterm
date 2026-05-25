@@ -61,6 +61,13 @@ pub struct Client {
     pub is_local: bool,
 }
 
+/// Returned when the serve command was spawned but the mux socket never became connectable.
+/// Distinct from general network errors so callers can offer targeted recovery (e.g.
+/// uploading the server binary).
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[error("mux server process failed to start")]
+pub struct MuxServerProcessFailed;
+
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 #[error(
     "Please install the same version of wezterm on both the client and server!\n\
@@ -793,9 +800,11 @@ impl Reconnectable {
                     }
                 });
 
-                unix_connect_with_retry(&target, true, None).with_context(|| {
-                    format!("(after spawning server) failed to connect to {:?}", target)
-                })?
+                unix_connect_with_retry(&target, true, None)
+                    .with_context(|| {
+                        format!("(after spawning server) failed to connect to {:?}", target)
+                    })
+                    .map_err(|e| anyhow::Error::new(MuxServerProcessFailed).context(e))?
             }
         };
 

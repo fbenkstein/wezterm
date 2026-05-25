@@ -54,7 +54,20 @@ use crate::activity::Activity;
 pub const DEFAULT_WORKSPACE: &str = "default";
 
 #[derive(Clone, Debug)]
+pub enum MuxServerStartFailedReason {
+    /// The server process was spawned but did not produce a connectable socket.
+    ProcessFailed,
+    /// The server connected but reported an incompatible codec version.
+    VersionMismatch,
+}
+
+#[derive(Clone, Debug)]
 pub enum MuxNotification {
+    MuxServerStartFailed {
+        domain_id: DomainId,
+        reason: MuxServerStartFailedReason,
+        message: String,
+    },
     PaneOutput(PaneId),
     PaneAdded(PaneId),
     PaneRemoved(PaneId),

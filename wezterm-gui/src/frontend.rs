@@ -7,8 +7,10 @@ use anyhow::{Context, Error};
 use config::keyassignment::{KeyAssignment, SpawnCommand};
 use config::{ConfigSubscription, NotificationHandling};
 use mux::client::ClientId;
+use mux::domain::DomainId;
 use mux::window::WindowId as MuxWindowId;
-use mux::{Mux, MuxNotification};
+use mux::{Mux, MuxNotification, MuxServerStartFailedReason};
+use mux_lua::MuxDomain;
 use promise::{Future, Promise};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -30,6 +32,26 @@ impl Drop for GuiFrontEnd {
     fn drop(&mut self) {
         ::window::shutdown();
     }
+}
+
+async fn trigger_mux_server_start_failed(
+    lua: Option<Rc<mlua::Lua>>,
+    domain_id: DomainId,
+    reason: MuxServerStartFailedReason,
+    message: String,
+) -> anyhow::Result<()> {
+    if let Some(lua) = lua {
+        let reason_str = match reason {
+            MuxServerStartFailedReason::ProcessFailed => "not_found",
+            MuxServerStartFailedReason::VersionMismatch => "version_mismatch",
+        };
+        let info = lua.create_table()?;
+        info.set("reason", reason_str)?;
+        info.set("message", message)?;
+        let args = lua.pack_multi((MuxDomain(domain_id), info))?;
+        config::lua::emit_event(&lua, ("mux-server-start-failed".to_string(), args)).await?;
+    }
+    Ok(())
 }
 
 impl GuiFrontEnd {
@@ -170,6 +192,25 @@ impl GuiFrontEnd {
                     } else if let Err(err) = crate::download::save_to_downloads(name, &*data) {
                         log::error!("save_to_downloads: {:#}", err);
                     }
+                }
+                MuxNotification::MuxServerStartFailed {
+                    domain_id,
+                    reason,
+                    message,
+                } => {
+                    promise::spawn::spawn_into_main_thread(async move {
+                        if let Err(err) = config::with_lua_config_on_main_thread(move |lua| {
+                            trigger_mux_server_start_failed(lua, domain_id, reason, message)
+                        })
+                        .await
+                        {
+                            log::error!(
+                                "while processing mux-server-start-failed event: {:#}",
+                                err
+                            );
+                        }
+                    })
+                    .detach();
                 }
                 MuxNotification::AssignClipboard {
                     pane_id,
