@@ -1,0 +1,67 @@
+# Builds a universal (ARM + Intel) macOS .app and uploads it as a workflow
+# artifact. Core logic lives in .github/scripts/build-macos.sh, which is also
+# runnable locally given the required tools (cargo, lipo, tic, zip).
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.lock'
+      - '**/Cargo.toml'
+      - '.cargo/config.toml'
+      - 'assets/fonts/**'
+      - 'assets/icon/*'
+      - 'assets/macos/**'
+      - 'assets/shell-completion/**'
+      - 'assets/shell-integration/**'
+      - 'termwiz/data/wezterm.terminfo'
+      - '.github/scripts/build-macos.sh'
+      - '.github/workflows/build-macos.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '10.12'
+      CARGO_INCREMENTAL: '0'
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust targets
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache Cargo vendor
+        id: vendor-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            .cargo/config
+          key: cargo-vendor-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Vendor dependencies
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
+        run: cargo vendor --locked --versioned-dirs >> .cargo/config
+
+      - name: Build and package
+        run: bash .github/scripts/build-macos.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: WezTerm-*.zip
+          retention-days: 5
