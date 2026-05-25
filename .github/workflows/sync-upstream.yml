@@ -32,16 +32,12 @@ jobs:
           git fetch upstream main
           git fetch origin dot-github
 
-      - name: Merge upstream main
-        # -X theirs auto-resolves conflicts in favour of upstream
-        run: git merge upstream/main --no-edit -X theirs
-
-      - name: Restore custom .github
+      - name: Merge upstream main and restore custom .github
+        # --no-commit leaves the merge staged so we can overlay .github before committing
         run: |
+          git merge upstream/main --no-commit --no-edit -X theirs || true
           git checkout origin/dot-github -- .github/
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: restore custom .github after upstream sync [skip ci]"
-          fi
+          git commit -m "chore: sync with upstream [skip ci]"
 
       - name: Push to fork main
         run: git push origin main
