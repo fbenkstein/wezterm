@@ -5,6 +5,11 @@ name: Build macOS app with mux
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or commit to build'
+        required: false
+        default: ''
 
 jobs:
   macos-app:
@@ -18,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
       - name: Install Rust targets
@@ -60,6 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
       - uses: taiki-e/install-action@cross
