@@ -37,7 +37,7 @@ jobs:
 
           # Replace .github entirely with the version from dot-github
           # (git rm --cached requires a work tree even for bare repos; use update-index instead)
-          git ls-files -z -- .github | xargs -0 git update-index --force-remove
+          git ls-tree -r -z --name-only upstream/main -- .github | xargs -0 git update-index --force-remove
           git read-tree --prefix=.github/ origin/dot-github:.github
 
           TREE=$(git write-tree)
