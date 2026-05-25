@@ -13,6 +13,14 @@ use wezterm_gui_subcommands::*;
 use wezterm_mux_server_impl::update_mux_domains_for_server;
 
 mod daemonize;
+mod proxy;
+
+#[derive(Debug, Subcommand)]
+enum SubCmd {
+    /// Connect to the mux server (starting it if needed) and bridge stdio.
+    /// Suitable for use as a proxy_command in WezTerm configuration.
+    Proxy,
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -56,6 +64,9 @@ struct Opt {
     #[arg(long, hide = true)]
     pid_file_fd: Option<i32>,
 
+    #[command(subcommand)]
+    command: Option<SubCmd>,
+
     /// Instead of executing your shell, run PROG.
     /// For example: `wezterm start -- bash -l` will spawn bash
     /// as if it were a login shell.
@@ -97,6 +108,15 @@ fn run() -> anyhow::Result<()> {
     )?;
 
     let config = config::configuration();
+
+    if let Some(SubCmd::Proxy) = opts.command {
+        return proxy::run(
+            &config,
+            opts.skip_config,
+            opts.config_file.as_ref(),
+            &opts.config_override,
+        );
+    }
 
     config.update_ulimit()?;
     if let Some(value) = &config.default_ssh_auth_sock {
