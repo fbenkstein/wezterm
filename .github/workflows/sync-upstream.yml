@@ -24,8 +24,8 @@ jobs:
         working-directory: repo.git
         run: |
           git remote add upstream https://github.com/wez/wezterm.git
-          git fetch upstream main
-          git fetch origin dot-github
+          git fetch upstream refs/heads/main:refs/remotes/upstream/main
+          git fetch origin refs/heads/dot-github:refs/remotes/origin/dot-github
 
       - name: Build and push merge commit
         working-directory: repo.git
