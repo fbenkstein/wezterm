@@ -1,0 +1,23 @@
+[package]
+name = "install-wezterm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone workspace — keeps Cargo from treating this crate as part of the
+# wezterm workspace at the repo root when `.github` is synced into main.
+[workspace]
+
+[[bin]]
+name = "install-wezterm"
+path = "src/main.rs"
+# The output binary is renamed to `install-wezterm.command` after building, so
+# Finder/Terminal handle double-click correctly. Cargo bin names cannot contain
+# a literal '.' (it becomes the internal crate identifier). See README.md.
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.27"
+
+[profile.release]
+strip = "symbols"
