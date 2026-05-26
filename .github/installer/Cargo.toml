@@ -9,9 +9,9 @@ publish = false
 [workspace]
 
 [[bin]]
-name = "install-wezterm"
+name = "installer"
 path = "src/main.rs"
-# The output binary is renamed to `install-wezterm.command` after building, so
+# The output binary is renamed to `installer.command` after building so
 # Finder/Terminal handle double-click correctly. Cargo bin names cannot contain
 # a literal '.' (it becomes the internal crate identifier). See README.md.
 

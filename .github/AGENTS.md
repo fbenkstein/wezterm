@@ -40,8 +40,11 @@ next run, or it can be triggered manually via `workflow_dispatch`.
     build-mux-linux.sh       # builds static wezterm-mux-server for a musl target (uses cross)
     combine-macos.sh         # injects mux binaries into app zip → +mux
     add-installer.sh         # injects installer into +mux zip → +mux+custom-install
-  installer/
-    install-wezterm          # placeholder; to be replaced with a signed Rust binary
+  installer/                 # Rust crate; see installer/README.md
+    Cargo.toml
+    src/main.rs
+    build.sh                 # build + sign + notarize + stage locally
+    installer.command        # built+signed binary, committed via Git LFS
   TODO.md
 ```
 

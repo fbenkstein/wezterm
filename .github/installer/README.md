@@ -1,11 +1,11 @@
-# install-wezterm
+# installer
 
 A signed, double-clickable macOS installer for the WezTerm fork.
 
 ## What it does
 
 Inside the downloaded zip, the installer sits next to `WezTerm.app`. The user
-double-clicks `install-wezterm.command`, Terminal opens, and the installer:
+double-clicks `installer.command`, Terminal opens, and the installer:
 
 1. Verifies a `Developer ID Application` identity exists in the login keychain.
 2. Asks `[Y/n]` to proceed.
@@ -30,7 +30,7 @@ The installer itself is the bootstrap. It must be Developer-ID signed and
 notarized so it can launch from a Gatekeeper-quarantined download without
 warnings. That signing happens **once, locally**, when the installer source
 changes. The resulting signed binary is committed to the `dot-github` branch
-and bundled into the zip by CI.
+(LFS-tracked) and bundled into the zip by CI.
 
 ## Prerequisites (one-time, on your machine)
 
@@ -50,38 +50,30 @@ and bundled into the zip by CI.
 
 ## Building, signing, and shipping the installer
 
-The signed `install-wezterm.command` binary is what CI bundles into the zip.
-Source lives in this directory; the built+signed binary is committed alongside.
+Run `build.sh`:
 
 ```
 cd .github/installer
-cargo build --release
-
-# Cargo produces `install-wezterm`; rename to `.command` so Finder/Terminal
-# handle double-click. The bin name in Cargo.toml can't contain `.`.
-mv target/release/install-wezterm target/release/install-wezterm.command
-
-codesign --force --options runtime --timestamp \
-    --sign "Developer ID Application: <Your Name> (TEAMID)" \
-    target/release/install-wezterm.command
-
-ditto -c -k --keepParent target/release/install-wezterm.command /tmp/installer.zip
-xcrun notarytool submit /tmp/installer.zip \
-    --keychain-profile wezterm-installer --wait
-xcrun stapler staple target/release/install-wezterm.command
-
-cp target/release/install-wezterm.command ./install-wezterm.command
+./build.sh
 ```
 
-Then commit `install-wezterm.command` to the `dot-github` branch alongside the
-source. Re-sign only when the installer source changes; otherwise the existing
-signed binary is reused.
+The script is guarded — each step (sign, notarize, staple) checks its
+prerequisites and skips with a helpful message if anything is missing. So it
+runs to completion even if you haven't yet set up the notarization profile;
+the resulting binary will simply be signed-but-not-notarized in that case.
+
+After it finishes, `installer.command` is staged at the path CI expects:
+`.github/installer/installer.command`. Commit it (it goes through Git LFS — see
+`.gitattributes`).
+
+Re-run `build.sh` whenever you change the installer source. Otherwise the
+existing signed binary is reused.
 
 ## How CI consumes it
 
-`.github/scripts/add-installer.sh` copies `install-wezterm.command` from this
+`.github/scripts/add-installer.sh` copies `installer.command` from this
 directory into the zip alongside `WezTerm.app`. There is no build step in CI;
-the signed binary is a pre-built artifact in the source tree.
+the signed binary is a pre-built LFS artifact in the source tree.
 
 ## Layout
 
@@ -89,7 +81,10 @@ the signed binary is a pre-built artifact in the source tree.
 .github/installer/
   Cargo.toml
   src/main.rs
+  build.sh
   README.md
-  install-wezterm.command   # built+signed binary; committed
-  target/                   # cargo build output; gitignored
+  .gitignore
+  .gitattributes
+  installer.command   # built+signed binary; committed via Git LFS
+  target/             # cargo build output; gitignored
 ```
