@@ -2,7 +2,7 @@
 # Build wezterm for macOS and package it as a universal-binary .app zip.
 #
 # Assumes: cargo with x86_64-apple-darwin and aarch64-apple-darwin targets,
-#          lipo, tic (ncurses), zip.
+#          lipo, tic (ncurses), zip, codesign.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -14,10 +14,14 @@ TARGETS=(x86_64-apple-darwin aarch64-apple-darwin)
 
 cd "$REPO_ROOT"
 
+# One cargo invocation per target with all packages — avoids repeated
+# dependency-graph resolution and lets cargo schedule across the package set.
+PKG_ARGS=()
 for bin in "${BINS[@]}"; do
-    for target in "${TARGETS[@]}"; do
-        cargo build --release --locked --target "$target" -p "$bin"
-    done
+    PKG_ARGS+=(-p "$bin")
+done
+for target in "${TARGETS[@]}"; do
+    cargo build --release --locked --target "$target" "${PKG_ARGS[@]}"
 done
 
 ZIPDIR="$REPO_ROOT/WezTerm-macos-$TAG_NAME"
@@ -41,7 +45,12 @@ for bin in "${BINS[@]}"; do
         -create -output "$APP/Contents/MacOS/$bin"
 done
 
-zip -r "$ZIPFILE" "$(basename "$ZIPDIR")"
+# lipo strips signatures; re-sign ad-hoc so binaries can launch on Apple Silicon
+# without "killed: codesign". Quarantine from browser-download is separate —
+# strip it with `xattr -cr WezTerm.app` after unzipping.
+codesign --force --deep --sign - "$APP"
+
+zip -qr "$ZIPFILE" "$(basename "$ZIPDIR")"
 rm -rf "$ZIPDIR"
 
 echo "Built: $ZIPFILE"

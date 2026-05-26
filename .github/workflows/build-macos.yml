@@ -1,6 +1,6 @@
 # Builds a universal (ARM + Intel) macOS .app and uploads it as a workflow
 # artifact. Core logic lives in .github/scripts/build-macos.sh, which is also
-# runnable locally given the required tools (cargo, lipo, tic, zip).
+# runnable locally given the required tools (cargo, lipo, tic, zip, codesign).
 name: Build macOS
 
 on:
@@ -47,12 +47,36 @@ jobs:
         if: steps.vendor-cache.outputs.cache-hit != 'true'
         run: cargo vendor --locked --versioned-dirs >> .cargo/config
 
+      - name: Compute build tag
+        id: tag
+        run: |
+          TAG=$(git -c core.abbrev=8 show -s --format=%cd-%h --date=format:%Y%m%d-%H%M%S)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Build and package
+        env:
+          TAG_NAME: ${{ steps.tag.outputs.tag }}
         run: bash .github/scripts/build-macos.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos
+          name: WezTerm-macos-${{ steps.tag.outputs.tag }}
           path: WezTerm-*.zip
-          retention-days: 5
+          retention-days: 14
+
+      - name: Run summary
+        run: |
+          {
+            echo "## Build complete"
+            echo ""
+            echo "Artifact: \`WezTerm-macos-${{ steps.tag.outputs.tag }}\`"
+            echo ""
+            echo "After downloading and unzipping:"
+            echo ""
+            echo '```'
+            echo 'cd WezTerm-macos-${{ steps.tag.outputs.tag }}'
+            echo 'xattr -cr WezTerm.app'
+            echo 'open WezTerm.app'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
