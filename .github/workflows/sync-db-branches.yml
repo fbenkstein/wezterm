@@ -1,0 +1,48 @@
+# Syncs all branches from fbenkstein-db/wezterm into this repo under the
+# db/ prefix (e.g. db/main, db/my-feature).
+#
+# Requires a fine-grained PAT with read access to fbenkstein-db/wezterm
+# stored as the DB_PAT repository secret.
+#
+# Pruning: branches that no longer exist in fbenkstein-db/wezterm are
+# deleted from the db/ namespace here.
+name: Sync db/ branches
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'  # Every Monday at 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Init bare repo and fetch
+        run: |
+          git init --bare repo.git
+          git -C repo.git remote add origin \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git -C repo.git remote add db \
+            "https://x-access-token:${{ secrets.DB_PAT }}@github.com/fbenkstein-db/wezterm.git"
+
+          # Fetch existing db/* branches so we can detect deletions
+          git -C repo.git fetch origin '+refs/heads/db/*:refs/remotes/origin-db/*' || true
+          # Fetch all branches from the db remote
+          git -C repo.git fetch db '+refs/heads/*:refs/remotes/db/*'
+
+      - name: Push with db/ prefix
+        run: |
+          git -C repo.git push origin '+refs/remotes/db/*:refs/heads/db/*'
+
+      - name: Prune stale db/ branches
+        run: |
+          git -C repo.git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin-db/ \
+          | while read branch; do
+              if ! git -C repo.git rev-parse --verify "refs/remotes/db/$branch" &>/dev/null; then
+                echo "Deleting stale branch: db/$branch"
+                git -C repo.git push origin --delete "db/$branch" || true
+              fi
+            done
