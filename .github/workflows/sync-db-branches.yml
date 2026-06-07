@@ -14,8 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  workflows: write
+  contents: read
 
 jobs:
   sync:
@@ -25,7 +24,7 @@ jobs:
         run: |
           git init --bare repo.git
           git -C repo.git remote add origin \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+            "https://x-access-token:${{ secrets.PUSH_PAT }}@github.com/${{ github.repository }}"
           git -C repo.git remote add db \
             "https://x-access-token:${{ secrets.DB_PAT }}@github.com/fbenkstein-db/wezterm.git"
 
