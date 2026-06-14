@@ -66,7 +66,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WezTerm-macos-${{ steps.tag.outputs.tag }}
+          name: WezTerm-macos-${{ steps.tag.outputs.tag }}-signed-notarized
           path: WezTerm-*.zip
           retention-days: 14
 
@@ -75,7 +75,7 @@ jobs:
           {
             echo "## Build complete"
             echo ""
-            echo "Artifact: \`WezTerm-macos-${{ steps.tag.outputs.tag }}\`"
+            echo "Artifact: \`WezTerm-macos-${{ steps.tag.outputs.tag }}-signed-notarized\`"
             echo ""
             echo "After downloading and unzipping:"
             echo ""

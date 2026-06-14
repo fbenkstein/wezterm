@@ -57,7 +57,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-app
+          name: WezTerm-macos-app
           path: WezTerm-macos-*.zip
           retention-days: 1
 
@@ -82,7 +82,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mux-${{ matrix.target }}
+          name: wezterm-mux-server-${{ matrix.target == 'x86_64-unknown-linux-musl' && 'x86_64-linux' || 'aarch64-linux' }}
           path: target/${{ matrix.target }}/release/wezterm-mux-server
           retention-days: 1
 
@@ -95,17 +95,17 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: macos-app
+          name: WezTerm-macos-app
           path: macos-app/
 
       - uses: actions/download-artifact@v4
         with:
-          name: mux-x86_64-unknown-linux-musl
+          name: wezterm-mux-server-x86_64-linux
           path: mux-binaries/x86_64-unknown-linux-musl/
 
       - uses: actions/download-artifact@v4
         with:
-          name: mux-aarch64-unknown-linux-musl
+          name: wezterm-mux-server-aarch64-linux
           path: mux-binaries/aarch64-unknown-linux-musl/
 
       - name: Combine
@@ -113,7 +113,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-with-mux
+          name: WezTerm-macos-with-mux-server
           path: WezTerm-macos-*+mux.zip
           retention-days: 1
 
@@ -126,7 +126,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: macos-with-mux
+          name: WezTerm-macos-with-mux-server
           path: macos-with-mux/
 
       - name: Add installer
@@ -134,6 +134,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-with-mux-custom-install
+          name: WezTerm-macos-with-mux-server-signed-notarized
           path: WezTerm-macos-*+mux+custom-install.zip
           retention-days: 5
