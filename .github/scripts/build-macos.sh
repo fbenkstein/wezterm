@@ -45,10 +45,7 @@ for bin in "${BINS[@]}"; do
         -create -output "$APP/Contents/MacOS/$bin"
 done
 
-# lipo strips signatures; re-sign ad-hoc so binaries can launch on Apple Silicon
-# without "killed: codesign". Quarantine from browser-download is separate —
-# strip it with `xattr -cr WezTerm.app` after unzipping.
-codesign --force --deep --sign - "$APP"
+bash "$(dirname "${BASH_SOURCE[0]}")/sign-and-notarize.sh" "$APP"
 
 zip -qr "$ZIPFILE" "$(basename "$ZIPDIR")"
 rm -rf "$ZIPDIR"
