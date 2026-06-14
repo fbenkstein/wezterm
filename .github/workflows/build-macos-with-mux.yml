@@ -1,6 +1,6 @@
-# Builds the macOS app and static Linux mux server binaries, then combines them
-# into a single +mux artifact. All jobs reuse the same scripts as the individual
-# build workflows; artifacts are shared within the run via upload/download.
+# Builds the macOS app with static Linux mux server binaries embedded in the
+# bundle. The mux binaries are built first, then downloaded into the macOS
+# build so they can be bundled before signing and notarization.
 name: Build macOS app with mux
 
 on:
@@ -12,7 +12,33 @@ on:
         default: ''
 
 jobs:
+  mux-linux:
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+
+      - uses: taiki-e/install-action@cross
+
+      - name: Build
+        run: bash .github/scripts/build-mux-linux.sh ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wezterm-mux-server-${{ matrix.target == 'x86_64-unknown-linux-musl' && 'x86_64-linux' || 'aarch64-linux' }}
+          path: target/${{ matrix.target }}/release/wezterm-mux-server
+          retention-days: 1
+
   macos-app:
+    needs: [mux-linux]
     runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: '10.12'
@@ -46,58 +72,6 @@ jobs:
         if: steps.vendor-cache.outputs.cache-hit != 'true'
         run: cargo vendor --locked --versioned-dirs >> .cargo/config
 
-      - name: Build and package
-        env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: bash .github/scripts/build-macos.sh
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: WezTerm-macos-app
-          path: WezTerm-macos-*.zip
-          retention-days: 1
-
-  mux-linux:
-    strategy:
-      matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-          submodules: recursive
-
-      - uses: taiki-e/install-action@cross
-
-      - name: Build
-        run: bash .github/scripts/build-mux-linux.sh ${{ matrix.target }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wezterm-mux-server-${{ matrix.target == 'x86_64-unknown-linux-musl' && 'x86_64-linux' || 'aarch64-linux' }}
-          path: target/${{ matrix.target }}/release/wezterm-mux-server
-          retention-days: 1
-
-  combine:
-    needs: [macos-app, mux-linux]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: WezTerm-macos-app
-          path: macos-app/
-
       - uses: actions/download-artifact@v4
         with:
           name: wezterm-mux-server-x86_64-linux
@@ -108,32 +82,18 @@ jobs:
           name: wezterm-mux-server-aarch64-linux
           path: mux-binaries/aarch64-unknown-linux-musl/
 
-      - name: Combine
-        run: bash .github/scripts/combine-macos.sh macos-app/WezTerm-macos-*.zip mux-binaries/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: WezTerm-macos-with-mux-server
-          path: WezTerm-macos-*+mux.zip
-          retention-days: 1
-
-  custom-install:
-    needs: combine
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: WezTerm-macos-with-mux-server
-          path: macos-with-mux/
-
-      - name: Add installer
-        run: bash .github/scripts/add-installer.sh macos-with-mux/WezTerm-macos-*+mux.zip
+      - name: Build and package
+        env:
+          MUX_BINARIES_DIR: ${{ github.workspace }}/mux-binaries
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash .github/scripts/build-macos.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: WezTerm-macos-with-mux-server-signed-notarized
-          path: WezTerm-macos-*+mux+custom-install.zip
-          retention-days: 5
+          path: WezTerm-macos-*.zip
+          retention-days: 14

@@ -45,6 +45,16 @@ for bin in "${BINS[@]}"; do
         -create -output "$APP/Contents/MacOS/$bin"
 done
 
+if [[ -n "${MUX_BINARIES_DIR:-}" ]]; then
+    MUX_DEST="$APP/Contents/Resources/mux-binaries"
+    mkdir -p "$MUX_DEST"
+    for target_dir in "$MUX_BINARIES_DIR"/*/; do
+        target=$(basename "$target_dir")
+        mkdir -p "$MUX_DEST/$target"
+        install -m 755 "$target_dir/wezterm-mux-server" "$MUX_DEST/$target/wezterm-mux-server"
+    done
+fi
+
 bash "$(dirname "${BASH_SOURCE[0]}")/sign-and-notarize.sh" "$APP"
 
 zip -qr "$ZIPFILE" "$(basename "$ZIPDIR")"
