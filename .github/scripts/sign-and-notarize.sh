@@ -38,13 +38,17 @@ cleanup() {
 trap cleanup EXIT
 
 echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$P12_FILE"
+# The P12 must be exported with -legacy (openssl pkcs12 -export -legacy ...) so that
+# macOS's security import accepts it. OpenSSL 3.x defaults to AES-256/SHA-256 PKCS12
+# encryption, which triggers "MAC verification failed during PKCS12 import" even when
+# the password is correct. The -legacy flag forces RC2/3DES/SHA1 that macOS expects.
 
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 security import "$P12_FILE" \
     -k "$KEYCHAIN_PATH" \
-    -P "${APPLE_CERTIFICATE_PASSWORD:?APPLE_CERTIFICATE_PASSWORD must be set}" \
+    -P "$(printf '%s' "${APPLE_CERTIFICATE_PASSWORD:?APPLE_CERTIFICATE_PASSWORD must be set}")" \
     -T /usr/bin/codesign
 security set-key-partition-list \
     -S apple-tool:,apple:,codesign: \
