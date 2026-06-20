@@ -2837,23 +2837,25 @@ impl WindowView {
             modifiers,
         );
 
-        if (chars == "." && modifiers == Modifiers::SUPER)
-            || (chars == "\u{1b}" && modifiers == Modifiers::CTRL)
-            || (chars == "\t" && modifiers == Modifiers::CTRL)
-            || (chars == "\x19"/* Shift-Tab: See issue #1902 */)
-        {
-            // Synthesize a key down event for this, because macOS will
-            // not do that, even though we tell it that we handled this event.
-            // <https://github.com/wezterm/wezterm/issues/1867>
-            Self::key_common(this, nsevent, true);
-
-            // Prevent macOS from calling doCommandBySelector(cancel:)
-            YES
-        } else {
-            // Allow macOS to process built-in shortcuts like CMD-`
-            // to cycle though windows
-            NO
+        // Allow macOS to process built-in shortcuts like CMD-` to cycle
+        // through this application's windows.
+        if chars == "`" && modifiers == Modifiers::SUPER {
+            return NO;
         }
+
+        // Take ownership of the event ourselves and route it through the
+        // normal key dispatch path. If we returned NO here for menu-bound
+        // shortcuts (e.g. ActivateTabRelative on Cmd+[ / Cmd+]), AppKit
+        // would dispatch them via the menu key-equivalent path, whose
+        // repeat timer does not reliably stop on key release — producing
+        // runaway tab switching when chording quickly between two such
+        // bindings. Synthesizing a key-down event here also covers
+        // shortcuts that macOS never delivers via keyDown:, such as
+        // Cmd+., Ctrl+Esc, Ctrl+Tab, and Shift+Tab.
+        // <https://github.com/wezterm/wezterm/issues/1867>
+        // <https://github.com/wezterm/wezterm/issues/1902>
+        Self::key_common(this, nsevent, true);
+        YES
     }
 
     extern "C" fn flags_changed(this: &mut Object, _sel: Sel, nsevent: id) {
