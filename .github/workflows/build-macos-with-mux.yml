@@ -1,0 +1,102 @@
+# Builds the macOS app with static Linux mux server binaries embedded in the
+# bundle. The mux binaries are built first, then downloaded into the macOS
+# build so they can be bundled before signing and notarization.
+name: Build macOS app with mux
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or commit to build'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  mux-linux:
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+
+      - uses: taiki-e/install-action@e69be69e81342df335337f42bdade9e42a00bc67  # cross
+
+      - name: Build
+        run: bash .github/scripts/build-mux-linux.sh ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: wezterm-mux-server-${{ matrix.target == 'x86_64-unknown-linux-musl' && 'x86_64-linux' || 'aarch64-linux' }}
+          path: target/${{ matrix.target }}/release/wezterm-mux-server
+          retention-days: 1
+
+  macos-app:
+    needs: [mux-linux]
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '10.12'
+      CARGO_INCREMENTAL: '0'
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+
+      - name: Install Rust targets
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
+
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad  # v0.0.9
+
+      - name: Cache Cargo vendor
+        id: vendor-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: |
+            vendor
+            .cargo/config
+          key: cargo-vendor-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Vendor dependencies
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
+        run: cargo vendor --locked --versioned-dirs >> .cargo/config
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: wezterm-mux-server-x86_64-linux
+          path: mux-binaries/x86_64-unknown-linux-musl/
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: wezterm-mux-server-aarch64-linux
+          path: mux-binaries/aarch64-unknown-linux-musl/
+
+      - name: Build and package
+        env:
+          MUX_BINARIES_DIR: ${{ github.workspace }}/mux-binaries
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash .github/scripts/build-macos.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: WezTerm-macos-with-mux-server-signed-notarized
+          path: WezTerm-macos-*.zip
+          retention-days: 14
