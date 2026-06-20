@@ -35,6 +35,11 @@ use std::time::Duration;
 use thiserror::Error;
 use wezterm_uds::UnixStream;
 
+/// Single-quote a shell argument to make it safe for remote exec calls.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 #[derive(Error, Debug)]
 #[error("Timeout")]
 struct Timeout;
@@ -660,6 +665,116 @@ impl Reconnectable {
         }
     }
 
+    /// Locate the bundled wezterm-mux-server binary for a given remote
+    /// architecture string (as returned by `uname -m`).
+    ///
+    /// On a macOS app bundle the layout is:
+    ///   Contents/MacOS/wezterm-gui   ← current_exe()
+    ///   Contents/Resources/mux-binaries/{target}/wezterm-mux-server
+    fn find_bundled_mux_server(remote_arch: &str) -> Option<PathBuf> {
+        let target = match remote_arch.trim() {
+            "x86_64" => "x86_64-unknown-linux-musl",
+            "aarch64" | "arm64" => "aarch64-unknown-linux-musl",
+            _ => return None,
+        };
+        let exe = std::env::current_exe().ok()?;
+        // exe → .../Contents/MacOS/{bin}  →  parent = MacOS/  →  parent = Contents/
+        let contents = exe.parent()?.parent()?;
+        let candidate = contents
+            .join("Resources/mux-binaries")
+            .join(target)
+            .join("wezterm-mux-server");
+        candidate.exists().then_some(candidate)
+    }
+
+    /// If `ssh_dom.install_mux_server` is set, upload the bundled
+    /// wezterm-mux-server to the remote and return its path.
+    /// Skips the upload when the remote file's size already matches the local one.
+    /// Returns `None` when the feature is disabled and no `remote_mux_server_path`
+    /// is configured (i.e., fall back to `wezterm cli` proxy).
+    fn maybe_install_mux_server(
+        sess: &wezterm_ssh::Session,
+        ssh_dom: &SshDomain,
+        ui: &mut ConnectionUI,
+    ) -> anyhow::Result<Option<String>> {
+        if !ssh_dom.install_mux_server {
+            return Ok(ssh_dom.remote_mux_server_path.clone());
+        }
+
+        // Detect remote architecture.
+        let arch = {
+            let exec = block_on(sess.exec("uname -m", None))?;
+            let mut out = String::new();
+            exec.stdout.try_clone()?.read_to_string(&mut out)?;
+            out.trim().to_string()
+        };
+
+        let local_binary = Self::find_bundled_mux_server(&arch).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no bundled wezterm-mux-server found for remote arch '{}'; \
+                 set remote_mux_server_path manually",
+                arch
+            )
+        })?;
+
+        // Determine the remote install path, expanding ~ using SFTP canonicalize.
+        let remote_path = match ssh_dom.remote_mux_server_path.as_deref() {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => {
+                let sftp = sess.sftp();
+                let home = block_on(sftp.canonicalize("."))
+                    .context("determining remote home directory via SFTP")?;
+                format!("{}/.local/share/wezterm/wezterm-mux-server", home)
+            }
+        };
+
+        // Skip upload when the remote file already has the same size as the local one.
+        let local_size = std::fs::metadata(&local_binary)?.len();
+        let sftp = sess.sftp();
+        let needs_upload = match block_on(sftp.metadata(remote_path.as_str())) {
+            Ok(meta) => meta.size != Some(local_size),
+            Err(_) => true,
+        };
+
+        if needs_upload {
+            // Create parent directory (exec handles tilde and nested mkdir).
+            let remote_dir = Path::new(&remote_path)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            block_on(sess.exec(&format!("mkdir -p -- {}", shell_quote(&remote_dir)), None))?;
+
+            ui.output_str(&format!(
+                "Uploading wezterm-mux-server ({:.0}MB) to {}...\n",
+                local_size as f64 / 1_048_576.0,
+                remote_path
+            ));
+
+            let data = std::fs::read(&local_binary)?;
+            let mut remote_file = block_on(sftp.create(remote_path.as_str()))
+                .with_context(|| format!("creating remote file {}", remote_path))?;
+            block_on(smol::io::AsyncWriteExt::write_all(&mut remote_file, &data))
+                .context("writing remote file")?;
+            block_on(sftp.set_metadata(
+                remote_path.as_str(),
+                wezterm_ssh::Metadata {
+                    ty: wezterm_ssh::FileType::File,
+                    permissions: Some(wezterm_ssh::FilePermissions::from_unix_mode(0o755)),
+                    size: None,
+                    uid: None,
+                    gid: None,
+                    accessed: None,
+                    modified: None,
+                },
+            ))
+            .context("setting remote file permissions")?;
+
+            ui.output_str("Upload complete.\n");
+        }
+
+        Ok(Some(remote_path))
+    }
+
     /// Resolve the path to wezterm for the remote system.
     /// We can't simply derive this from the current executable because
     /// we are being asked to produce a path for the remote system and
@@ -683,10 +798,15 @@ impl Reconnectable {
         let ssh_config = mux::ssh::ssh_domain_to_ssh_config(&ssh_dom)?;
 
         let sess = ssh_connect_with_ui(ssh_config, ui)?;
+
+        let effective_mux_path = Self::maybe_install_mux_server(&sess, &ssh_dom, ui)?;
+
         let proxy_bin = Self::wezterm_bin_path(&ssh_dom.remote_wezterm_path);
 
         let cmd = if let Some(cmd) = ssh_dom.override_proxy_command.clone() {
             cmd
+        } else if let Some(mux_path) = effective_mux_path.as_deref() {
+            format!("{} proxy", mux_path)
         } else if initial {
             format!("{} cli --prefer-mux proxy", proxy_bin)
         } else {

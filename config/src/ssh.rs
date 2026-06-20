@@ -83,6 +83,25 @@ pub struct SshDomain {
 
     /// The path to the wezterm binary on the remote host
     pub remote_wezterm_path: Option<String>,
+
+    /// When true, WezTerm will automatically upload the bundled
+    /// wezterm-mux-server binary to the remote host on connect and use it
+    /// as the multiplexer proxy. The binary is uploaded to
+    /// `remote_mux_server_path` (if set) or
+    /// `~/.local/share/wezterm/wezterm-mux-server` otherwise.
+    /// The upload is skipped when the remote file is already the same size
+    /// as the local one.  Requires the app bundle to contain mux-binaries
+    /// for the remote architecture (x86_64 or aarch64 Linux).
+    #[dynamic(default)]
+    pub install_mux_server: bool,
+
+    /// Path to a standalone wezterm-mux-server binary on the remote host.
+    /// When set, WezTerm will invoke `<path> proxy` instead of the default
+    /// `wezterm cli --prefer-mux proxy`, allowing use of a bundled mux-server
+    /// without a full wezterm installation on the remote.
+    /// Takes precedence over remote_wezterm_path but is overridden by
+    /// override_proxy_command.
+    pub remote_mux_server_path: Option<String>,
     /// Override the entire `wezterm cli proxy` invocation that would otherwise
     /// be computed from remote_wezterm_path and other information.
     pub override_proxy_command: Option<String>,
