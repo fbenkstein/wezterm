@@ -1783,6 +1783,10 @@ pub fn default_local_echo_threshold_ms() -> Option<u64> {
     Some(100)
 }
 
+pub fn default_install_mux_server() -> bool {
+    true
+}
+
 fn default_bypass_mouse_reporting_modifiers() -> Modifiers {
     Modifiers::SHIFT
 }

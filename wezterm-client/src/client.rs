@@ -722,14 +722,20 @@ impl Reconnectable {
             .split_once(' ')
             .ok_or_else(|| anyhow::anyhow!("unexpected output from bash: {:?}", env_info))?;
 
-        let local_binary = Self::find_bundled_mux_server(ostype, hosttype).ok_or_else(|| {
-            anyhow::anyhow!(
-                "no bundled wezterm-mux-server for remote OS '{}' arch '{}'; \
-                 set remote_mux_server_path manually",
-                ostype,
-                hosttype
-            )
-        })?;
+        let local_binary = match Self::find_bundled_mux_server(ostype, hosttype) {
+            Some(p) => p,
+            None => {
+                // No bundled binary for this OS/arch (e.g. non-Linux remote or dev build
+                // without bundled binaries); fall back gracefully.
+                log::debug!(
+                    "no bundled wezterm-mux-server for remote OS '{}' arch '{}'; \
+                     falling back to remote_mux_server_path / wezterm cli",
+                    ostype,
+                    hosttype
+                );
+                return Ok(ssh_dom.remote_mux_server_path.clone());
+            }
+        };
 
         // Determine the remote install path, resolving ~ via SFTP canonicalize.
         let remote_path = match ssh_dom.remote_mux_server_path.as_deref() {

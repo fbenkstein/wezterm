@@ -89,10 +89,10 @@ pub struct SshDomain {
     /// as the multiplexer proxy. The binary is uploaded to
     /// `remote_mux_server_path` (if set) or
     /// `~/.local/share/wezterm/wezterm-mux-server` otherwise.
-    /// The upload is skipped when the remote file is already the same size
-    /// as the local one.  Requires the app bundle to contain mux-binaries
+    /// The upload is skipped when the remote file's SHA-256 already matches
+    /// the local one.  Requires the app bundle to contain mux-binaries
     /// for the remote architecture (x86_64 or aarch64 Linux).
-    #[dynamic(default)]
+    #[dynamic(default = "default_install_mux_server")]
     pub install_mux_server: bool,
 
     /// Path to a standalone wezterm-mux-server binary on the remote host.
