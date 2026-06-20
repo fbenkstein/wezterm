@@ -665,14 +665,17 @@ impl Reconnectable {
         }
     }
 
-    /// Locate the bundled wezterm-mux-server binary for a given remote
-    /// architecture string (as returned by `uname -m`).
+    /// Locate the bundled wezterm-mux-server binary for the remote OS and CPU.
     ///
+    /// `ostype` and `hosttype` come from `bash -c 'echo $OSTYPE $HOSTTYPE'`.
     /// On a macOS app bundle the layout is:
     ///   Contents/MacOS/wezterm-gui   ← current_exe()
     ///   Contents/Resources/mux-binaries/{target}/wezterm-mux-server
-    fn find_bundled_mux_server(remote_arch: &str) -> Option<PathBuf> {
-        let target = match remote_arch.trim() {
+    fn find_bundled_mux_server(ostype: &str, hosttype: &str) -> Option<PathBuf> {
+        if !ostype.starts_with("linux") {
+            return None;
+        }
+        let target = match hosttype.trim() {
             "x86_64" => "x86_64-unknown-linux-musl",
             "aarch64" | "arm64" => "aarch64-unknown-linux-musl",
             _ => return None,
@@ -687,9 +690,16 @@ impl Reconnectable {
         candidate.exists().then_some(candidate)
     }
 
+    fn local_sha256(path: &Path) -> anyhow::Result<String> {
+        let data = std::fs::read(path)?;
+        let digest =
+            openssl::hash::hash(openssl::hash::MessageDigest::sha256(), &data)?;
+        Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
     /// If `ssh_dom.install_mux_server` is set, upload the bundled
     /// wezterm-mux-server to the remote and return its path.
-    /// Skips the upload when the remote file's size already matches the local one.
+    /// Skips the upload when the remote file's SHA-256 already matches the local one.
     /// Returns `None` when the feature is disabled and no `remote_mux_server_path`
     /// is configured (i.e., fall back to `wezterm cli` proxy).
     fn maybe_install_mux_server(
@@ -701,23 +711,27 @@ impl Reconnectable {
             return Ok(ssh_dom.remote_mux_server_path.clone());
         }
 
-        // Detect remote architecture.
-        let arch = {
-            let exec = block_on(sess.exec("uname -m", None))?;
+        // Detect remote OS and CPU via bash variables; avoids assuming Linux/uname.
+        let env_info = {
+            let exec = block_on(sess.exec("bash -c 'echo $OSTYPE $HOSTTYPE'", None))?;
             let mut out = String::new();
             exec.stdout.try_clone()?.read_to_string(&mut out)?;
             out.trim().to_string()
         };
+        let (ostype, hosttype) = env_info
+            .split_once(' ')
+            .ok_or_else(|| anyhow::anyhow!("unexpected output from bash: {:?}", env_info))?;
 
-        let local_binary = Self::find_bundled_mux_server(&arch).ok_or_else(|| {
+        let local_binary = Self::find_bundled_mux_server(ostype, hosttype).ok_or_else(|| {
             anyhow::anyhow!(
-                "no bundled wezterm-mux-server found for remote arch '{}'; \
+                "no bundled wezterm-mux-server for remote OS '{}' arch '{}'; \
                  set remote_mux_server_path manually",
-                arch
+                ostype,
+                hosttype
             )
         })?;
 
-        // Determine the remote install path, expanding ~ using SFTP canonicalize.
+        // Determine the remote install path, resolving ~ via SFTP canonicalize.
         let remote_path = match ssh_dom.remote_mux_server_path.as_deref() {
             Some(p) if !p.is_empty() => p.to_string(),
             _ => {
@@ -728,21 +742,36 @@ impl Reconnectable {
             }
         };
 
-        // Skip upload when the remote file already has the same size as the local one.
-        let local_size = std::fs::metadata(&local_binary)?.len();
-        let sftp = sess.sftp();
-        let needs_upload = match block_on(sftp.metadata(remote_path.as_str())) {
-            Ok(meta) => meta.size != Some(local_size),
-            Err(_) => true,
+        // Skip upload when the remote SHA-256 matches the local binary.
+        let local_hash = Self::local_sha256(&local_binary)?;
+        let remote_hash = {
+            let exec = block_on(sess.exec(
+                &format!("openssl dgst -sha256 -- {}", shell_quote(&remote_path)),
+                None,
+            ))?;
+            let mut out = String::new();
+            exec.stdout.try_clone()?.read_to_string(&mut out)?;
+            // openssl output: "SHA256(path)= <hex>" or "SHA2-256(path)= <hex>"
+            out.trim()
+                .split_whitespace()
+                .last()
+                .map(|s| s.to_string())
         };
 
+        let needs_upload = remote_hash.as_deref() != Some(local_hash.as_str());
+
         if needs_upload {
-            // Create parent directory (exec handles tilde and nested mkdir).
+            let local_size = std::fs::metadata(&local_binary)?.len();
+
+            // Create parent directory.
             let remote_dir = Path::new(&remote_path)
                 .parent()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            block_on(sess.exec(&format!("mkdir -p -- {}", shell_quote(&remote_dir)), None))?;
+            block_on(sess.exec(
+                &format!("mkdir -p -- {}", shell_quote(&remote_dir)),
+                None,
+            ))?;
 
             ui.output_str(&format!(
                 "Uploading wezterm-mux-server ({:.0}MB) to {}...\n",
@@ -750,6 +779,7 @@ impl Reconnectable {
                 remote_path
             ));
 
+            let sftp = sess.sftp();
             let data = std::fs::read(&local_binary)?;
             let mut remote_file = block_on(sftp.create(remote_path.as_str()))
                 .with_context(|| format!("creating remote file {}", remote_path))?;
