@@ -769,15 +769,20 @@ impl Reconnectable {
         if needs_upload {
             let local_size = std::fs::metadata(&local_binary)?.len();
 
-            // Create parent directory.
+            // Create parent directory and wait for the command to finish before
+            // opening the SFTP file (exec spawns async; draining stdout waits for exit).
             let remote_dir = Path::new(&remote_path)
                 .parent()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            block_on(sess.exec(
-                &format!("mkdir -p -- {}", shell_quote(&remote_dir)),
-                None,
-            ))?;
+            {
+                let mkdir = block_on(sess.exec(
+                    &format!("mkdir -p -- {}", shell_quote(&remote_dir)),
+                    None,
+                ))?;
+                let mut discard = String::new();
+                mkdir.stdout.try_clone()?.read_to_string(&mut discard).ok();
+            }
 
             ui.output_str(&format!(
                 "Uploading wezterm-mux-server ({:.0}MB) to {}...\n",
