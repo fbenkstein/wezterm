@@ -4,12 +4,22 @@
 name: Build macOS app with mux
 
 on:
+  push:
+    branches:
+      - dev
   workflow_dispatch:
     inputs:
       ref:
         description: 'Branch, tag, or commit to build'
         required: false
         default: ''
+
+# Cancel an in-flight dev build when a newer commit is pushed, so rapid
+# re-pushes don't stack expensive signing/notarization runs. Manual
+# workflow_dispatch runs for an explicit ref get their own group.
+concurrency:
+  group: build-macos-with-mux-${{ github.event_name == 'push' && github.ref || inputs.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
