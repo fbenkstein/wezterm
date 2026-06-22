@@ -667,12 +667,13 @@ impl Reconnectable {
 
     /// Locate the bundled wezterm-mux-server binary for the remote OS and CPU.
     ///
-    /// `ostype` and `hosttype` come from `bash -c 'echo $OSTYPE $HOSTTYPE'`.
+    /// `ostype` and `hosttype` come from `uname -s` and `uname -m` on the
+    /// remote (e.g. "Linux" / "x86_64").
     /// On a macOS app bundle the layout is:
     ///   Contents/MacOS/wezterm-gui   ← current_exe()
     ///   Contents/Resources/mux-binaries/{target}/wezterm-mux-server
     fn find_bundled_mux_server(ostype: &str, hosttype: &str) -> Option<PathBuf> {
-        if !ostype.starts_with("linux") {
+        if !ostype.trim().eq_ignore_ascii_case("linux") {
             return None;
         }
         let target = match hosttype.trim() {
@@ -697,6 +698,26 @@ impl Reconnectable {
         Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
     }
 
+    /// Parse the OS/arch fields out of the remote detection command's output.
+    ///
+    /// The detection command prints each `uname` field on its own line,
+    /// prefixed with a `WEZTERM_OS_DETECT ` marker, so that chatty shell
+    /// startup files (a `.bashrc`/`.profile` that prints banners, fortunes,
+    /// etc.) can't corrupt the value we parse: we only look at marked lines,
+    /// take everything after the marker, and require exactly two such lines —
+    /// the OS (`uname -s`) and the arch (`uname -m`).
+    fn parse_os_detect(raw: &str) -> Option<(String, String)> {
+        const MARKER: &str = "WEZTERM_OS_DETECT ";
+        let fields: Vec<String> = raw
+            .lines()
+            .filter_map(|line| line.find(MARKER).map(|idx| line[idx + MARKER.len()..].trim().to_string()))
+            .collect();
+        match fields.as_slice() {
+            [ostype, hosttype] => Some((ostype.clone(), hosttype.clone())),
+            _ => None,
+        }
+    }
+
     /// If `ssh_dom.install_mux_server` is set, upload the bundled
     /// wezterm-mux-server to the remote and return its path.
     /// Skips the upload when the remote file's SHA-256 already matches the local one.
@@ -711,25 +732,45 @@ impl Reconnectable {
             return Ok(ssh_dom.remote_mux_server_path.clone());
         }
 
-        // Detect remote OS and CPU via bash variables; avoids assuming Linux/uname.
-        let env_info = {
-            let exec = block_on(sess.exec("bash -c 'echo $OSTYPE $HOSTTYPE'", None))?;
+        // Detect remote OS and CPU via `uname`, printing each field on its own
+        // marked line so chatty shell startup files can't corrupt the value.
+        // printf reuses the format string for each argument, so the two quoted
+        // `uname` substitutions yield two `WEZTERM_OS_DETECT <field>` lines.
+        // No `bash -c` wrapper: SSH already runs this via the remote shell, and
+        // printf/uname/`$(...)` are POSIX, so we don't depend on bash.
+        let detect_cmd = r#"printf 'WEZTERM_OS_DETECT %s\n' "$(uname -s)" "$(uname -m)""#;
+        let raw = {
+            let exec = block_on(sess.exec(detect_cmd, None))?;
             let mut out = String::new();
             exec.stdout.try_clone()?.read_to_string(&mut out)?;
-            out.trim().to_string()
+            out
         };
-        let (ostype, hosttype) = env_info
-            .split_once(' ')
-            .ok_or_else(|| anyhow::anyhow!("unexpected output from bash: {:?}", env_info))?;
 
-        let local_binary = match Self::find_bundled_mux_server(ostype, hosttype) {
+        let (ostype, hosttype) = match Self::parse_os_detect(&raw) {
+            Some(pair) => pair,
+            None => {
+                // Couldn't make sense of the remote OS detection output; fall
+                // back gracefully rather than aborting the connection.
+                log::warn!(
+                    "install_mux_server: could not detect remote OS/arch, \
+                     falling back to remote_mux_server_path / wezterm cli. \
+                     Detection command {:?} produced: {:?}",
+                    detect_cmd,
+                    raw
+                );
+                return Ok(ssh_dom.remote_mux_server_path.clone());
+            }
+        };
+
+        let local_binary = match Self::find_bundled_mux_server(&ostype, &hosttype) {
             Some(p) => p,
             None => {
                 // No bundled binary for this OS/arch (e.g. non-Linux remote or dev build
                 // without bundled binaries); fall back gracefully.
-                log::debug!(
-                    "no bundled wezterm-mux-server for remote OS '{}' arch '{}'; \
-                     falling back to remote_mux_server_path / wezterm cli",
+                log::warn!(
+                    "install_mux_server: no bundled wezterm-mux-server for detected \
+                     remote OS '{}' arch '{}', falling back to \
+                     remote_mux_server_path / wezterm cli",
                     ostype,
                     hosttype
                 );
