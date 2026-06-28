@@ -1,5 +1,13 @@
 # Protobuf Protocol Design
 
+## Update
+
+For the newer side-by-side streaming mux protocol sketch, see
+`streaming-mux-protobuf-protocol.md`. This note is still useful background for
+wire-format tradeoffs and type-mapping concerns, but it predates the decision
+to design a separate protobuf/gRPC-shaped implementation rather than adapt the
+current PDU set in place.
+
 ## Why consider it
 
 The current codec (LEB128 framing + varbincode body) works but has one hard
