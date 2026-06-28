@@ -64,6 +64,10 @@ pub struct Client {
     client_domain_config: ClientDomainConfig,
     pub is_reconnectable: bool,
     pub is_local: bool,
+    /// SHA-256 the remote proxy reported on stderr, if any. Shared with the
+    /// connection's stderr reader so a failed attach can decide whether
+    /// re-uploading the mux-server would help.
+    proxy_digest: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
@@ -541,10 +545,36 @@ where
 }
 
 #[derive(Debug)]
+/// How a (re)connection should treat the remote mux-server binary.
+#[derive(Clone)]
+pub(crate) enum ConnectIntent {
+    /// Normal connection: just launch the proxy.
+    Fresh,
+    /// Retry after a failed attach: replace any running daemon (via
+    /// `proxy --replace`) and, unless `prior_digest` already matches our
+    /// bundled binary, upload it first. `prior_digest` is the digest the
+    /// previous attempt's proxy reported on stderr, if any.
+    Reinstall { prior_digest: Option<String> },
+}
+
+/// A bundled mux-server binary we could deploy to a remote, plus where it would
+/// go and its digest (for deciding whether an upload is needed).
+struct Bundle {
+    local_binary: PathBuf,
+    local_sha: String,
+    remote_path: String,
+}
+
 struct Reconnectable {
     config: ClientDomainConfig,
     stream: Option<Box<dyn AsyncReadAndWrite>>,
     tls_creds: Option<GetTlsCredsResponse>,
+    /// One-shot intent for the next ssh connect; reset to `Fresh` after use so
+    /// that automatic reconnects don't re-trigger an install.
+    ssh_intent: ConnectIntent,
+    /// SHA-256 the proxy reported on stderr (`WEZTERM_MUX_DIGEST`), shared with
+    /// the owning `Client` so a failed attach can decide whether to re-upload.
+    proxy_digest: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct SshStream {
@@ -609,6 +639,8 @@ impl Reconnectable {
             config,
             stream,
             tls_creds: None,
+            ssh_intent: ConnectIntent::Fresh,
+            proxy_digest: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -718,18 +750,17 @@ impl Reconnectable {
         }
     }
 
-    /// If `ssh_dom.install_mux_server` is set, upload the bundled
-    /// wezterm-mux-server to the remote and return its path.
-    /// Skips the upload when the remote file's SHA-256 already matches the local one.
-    /// Returns `None` when the feature is disabled and no `remote_mux_server_path`
-    /// is configured (i.e., fall back to `wezterm cli` proxy).
-    fn maybe_install_mux_server(
+    /// Work out what we'd deploy to this remote: detect its OS/arch, locate the
+    /// matching bundled binary, hash it, and resolve the install path. Returns
+    /// `None` when we're not managing the binary (feature disabled, no bundled
+    /// binary for the arch, or undetectable remote) — in which case the caller
+    /// just lets the connection fail.
+    fn compute_bundle(
         sess: &wezterm_ssh::Session,
         ssh_dom: &SshDomain,
-        ui: &mut ConnectionUI,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<Option<Bundle>> {
         if !ssh_dom.install_mux_server {
-            return Ok(ssh_dom.remote_mux_server_path.clone());
+            return Ok(None);
         }
 
         // Detect remote OS and CPU via `uname`, printing each field on its own
@@ -749,34 +780,30 @@ impl Reconnectable {
         let (ostype, hosttype) = match Self::parse_os_detect(&raw) {
             Some(pair) => pair,
             None => {
-                // Couldn't make sense of the remote OS detection output; fall
-                // back gracefully rather than aborting the connection.
                 log::warn!(
-                    "install_mux_server: could not detect remote OS/arch, \
-                     falling back to remote_mux_server_path / wezterm cli. \
-                     Detection command {:?} produced: {:?}",
+                    "install_mux_server: could not detect remote OS/arch; \
+                     not deploying. Detection command {:?} produced: {:?}",
                     detect_cmd,
                     raw
                 );
-                return Ok(ssh_dom.remote_mux_server_path.clone());
+                return Ok(None);
             }
         };
 
         let local_binary = match Self::find_bundled_mux_server(&ostype, &hosttype) {
             Some(p) => p,
             None => {
-                // No bundled binary for this OS/arch (e.g. non-Linux remote or dev build
-                // without bundled binaries); fall back gracefully.
                 log::warn!(
-                    "install_mux_server: no bundled wezterm-mux-server for detected \
-                     remote OS '{}' arch '{}', falling back to \
-                     remote_mux_server_path / wezterm cli",
+                    "install_mux_server: no bundled wezterm-mux-server for remote \
+                     OS '{}' arch '{}'; not deploying",
                     ostype,
                     hosttype
                 );
-                return Ok(ssh_dom.remote_mux_server_path.clone());
+                return Ok(None);
             }
         };
+
+        let local_sha = Self::local_sha256(&local_binary)?;
 
         // Determine the remote install path, resolving ~ via SFTP canonicalize.
         let remote_path = match ssh_dom.remote_mux_server_path.as_deref() {
@@ -789,86 +816,94 @@ impl Reconnectable {
             }
         };
 
-        // Skip upload when the remote SHA-256 matches the local binary.
-        let local_hash = Self::local_sha256(&local_binary)?;
-        let remote_hash = {
-            let exec = block_on(sess.exec(
-                &format!("openssl dgst -sha256 -- {}", shell_quote(&remote_path)),
-                None,
-            ))?;
-            let mut out = String::new();
-            exec.stdout.try_clone()?.read_to_string(&mut out)?;
-            // openssl output: "SHA256(path)= <hex>" or "SHA2-256(path)= <hex>"
-            out.trim()
-                .split_whitespace()
-                .last()
-                .map(|s| s.to_string())
-        };
-
-        let needs_upload = remote_hash.as_deref() != Some(local_hash.as_str());
-
-        if needs_upload {
-            let local_size = std::fs::metadata(&local_binary)?.len();
-
-            // Create parent directory and wait for the command to finish before
-            // opening the SFTP file (exec spawns async; draining stdout waits for exit).
-            let remote_dir = Path::new(&remote_path)
-                .parent()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            {
-                let mkdir = block_on(sess.exec(
-                    &format!("mkdir -p -- {}", shell_quote(&remote_dir)),
-                    None,
-                ))?;
-                let mut discard = String::new();
-                mkdir.stdout.try_clone()?.read_to_string(&mut discard).ok();
-            }
-
-            ui.output_str(&format!(
-                "Uploading wezterm-mux-server ({:.0}MB) to {}...\n",
-                local_size as f64 / 1_048_576.0,
-                remote_path
-            ));
-
-            let sftp = sess.sftp();
-            let data = std::fs::read(&local_binary)?;
-            let mut remote_file = block_on(sftp.create(remote_path.as_str()))
-                .with_context(|| format!("creating remote file {}", remote_path))?;
-            block_on(smol::io::AsyncWriteExt::write_all(&mut remote_file, &data))
-                .context("writing remote file")?;
-            block_on(sftp.set_metadata(
-                remote_path.as_str(),
-                wezterm_ssh::Metadata {
-                    ty: wezterm_ssh::FileType::File,
-                    permissions: Some(wezterm_ssh::FilePermissions::from_unix_mode(0o755)),
-                    size: None,
-                    uid: None,
-                    gid: None,
-                    accessed: None,
-                    modified: None,
-                },
-            ))
-            .context("setting remote file permissions")?;
-
-            ui.output_str("Upload complete.\n");
-        }
-
-        Ok(Some(remote_path))
+        Ok(Some(Bundle {
+            local_binary,
+            local_sha,
+            remote_path,
+        }))
     }
 
-    /// Resolve the path to wezterm for the remote system.
-    /// We can't simply derive this from the current executable because
-    /// we are being asked to produce a path for the remote system and
-    /// we don't really know anything about it.
-    /// `path` comes from the SshDoman::remote_wezterm_path option; if set
-    /// then the user has told us where to look.
-    /// Otherwise, we have to rely on the `PATH` environment for the remote
-    /// system, and we don't know if it is even running unix, or whether
-    /// any given shell syntax will help us provide a more meaningful
-    /// message to the user.
+    /// Upload `local_binary` to `remote_path` (creating the parent dir) and mark
+    /// it executable.
+    fn upload_binary(
+        sess: &wezterm_ssh::Session,
+        local_binary: &Path,
+        remote_path: &str,
+        ui: &mut ConnectionUI,
+    ) -> anyhow::Result<()> {
+        let local_size = std::fs::metadata(local_binary)?.len();
+
+        // Create parent directory and wait for the command to finish before
+        // opening the SFTP file (exec spawns async; draining stdout waits for exit).
+        let remote_dir = Path::new(remote_path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        {
+            let mkdir = block_on(sess.exec(&format!("mkdir -p -- {}", shell_quote(&remote_dir)), None))?;
+            let mut discard = String::new();
+            mkdir.stdout.try_clone()?.read_to_string(&mut discard).ok();
+        }
+
+        ui.output_str(&format!(
+            "Uploading wezterm-mux-server ({:.0}MB) to {}...\n",
+            local_size as f64 / 1_048_576.0,
+            remote_path
+        ));
+
+        let sftp = sess.sftp();
+        let data = std::fs::read(local_binary)?;
+        let mut remote_file = block_on(sftp.create(remote_path))
+            .with_context(|| format!("creating remote file {}", remote_path))?;
+        block_on(smol::io::AsyncWriteExt::write_all(&mut remote_file, &data))
+            .context("writing remote file")?;
+        block_on(sftp.set_metadata(
+            remote_path,
+            wezterm_ssh::Metadata {
+                ty: wezterm_ssh::FileType::File,
+                permissions: Some(wezterm_ssh::FilePermissions::from_unix_mode(0o755)),
+                size: None,
+                uid: None,
+                gid: None,
+                accessed: None,
+                modified: None,
+            },
+        ))
+        .context("setting remote file permissions")?;
+
+        ui.output_str("Upload complete.\n");
+        Ok(())
+    }
+
+    /// Resolve the path to `wezterm` for the remote system, from the domain's
+    /// `remote_wezterm_path` option, defaulting to `wezterm` on `PATH`.
     fn wezterm_bin_path(path: &Option<String>) -> String {
         path.as_deref().unwrap_or("wezterm").to_string()
+    }
+
+    /// Build the command that launches the remote proxy. We prepend the managed
+    /// install dir to `PATH` and let the remote shell resolve
+    /// `wezterm-mux-server`, preferring our uploaded copy but falling back to
+    /// any compatible one already on `PATH`. A remote new enough to be
+    /// compatible supports `wezterm-mux-server proxy`, so there's no `wezterm
+    /// cli` fallback. `$HOME`/`$PATH` are expanded by the remote shell, so no
+    /// SFTP round-trip is needed on the happy path.
+    fn proxy_command(ssh_dom: &SshDomain, replace: bool) -> String {
+        let suffix = if replace { " --replace" } else { "" };
+        if let Some(cmd) = ssh_dom.override_proxy_command.clone() {
+            cmd
+        } else if let Some(p) = ssh_dom
+            .remote_mux_server_path
+            .as_deref()
+            .filter(|p| !p.is_empty())
+        {
+            format!("{} proxy{}", p, suffix)
+        } else {
+            format!(
+                "env PATH=\"$HOME/.local/share/wezterm:$PATH\" wezterm-mux-server proxy{}",
+                suffix
+            )
+        }
     }
 
     fn ssh_connect(
@@ -877,38 +912,49 @@ impl Reconnectable {
         initial: bool,
         ui: &mut ConnectionUI,
     ) -> anyhow::Result<()> {
+        let _ = initial;
         let ssh_config = mux::ssh::ssh_domain_to_ssh_config(&ssh_dom)?;
 
         let sess = ssh_connect_with_ui(ssh_config, ui)?;
 
-        let effective_mux_path = Self::maybe_install_mux_server(&sess, &ssh_dom, ui)?;
+        // Consume the intent; reconnects are always Fresh.
+        let intent = std::mem::replace(&mut self.ssh_intent, ConnectIntent::Fresh);
 
-        let proxy_bin = Self::wezterm_bin_path(&ssh_dom.remote_wezterm_path);
-
-        let cmd = if let Some(cmd) = ssh_dom.override_proxy_command.clone() {
-            cmd
-        } else if let Some(mux_path) = effective_mux_path.as_deref() {
-            format!("{} proxy", mux_path)
-        } else if initial {
-            format!("{} cli --prefer-mux proxy", proxy_bin)
-        } else {
-            format!("{} cli --prefer-mux --no-auto-start proxy", proxy_bin)
+        let cmd = match &intent {
+            ConnectIntent::Fresh => Self::proxy_command(&ssh_dom, false),
+            ConnectIntent::Reinstall { prior_digest } => {
+                // Off the happy path: detect the remote, and upload our bundled
+                // binary unless the one already there matches it; then replace
+                // any running daemon so it restarts from the current binary.
+                if let Some(bundle) = Self::compute_bundle(&sess, &ssh_dom)? {
+                    if prior_digest.as_deref() != Some(bundle.local_sha.as_str()) {
+                        Self::upload_binary(&sess, &bundle.local_binary, &bundle.remote_path, ui)?;
+                    }
+                }
+                Self::proxy_command(&ssh_dom, true)
+            }
         };
         ui.output_str(&format!("Running: {}\n", cmd));
         log::debug!("going to run {}", cmd);
 
         let exec = smol::block_on(sess.exec(&cmd, None))?;
 
+        // Capture stderr: log it, and watch for the digest line the proxy emits
+        // so that a failed attach can decide whether re-uploading would help.
         let mut stderr = exec.stderr;
+        let proxy_digest = self.proxy_digest.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 1024];
-            while let Ok(len) = stderr.read(&mut buf) {
-                if len == 0 {
-                    break;
-                } else {
-                    let stderr = &buf[0..len];
-                    log::error!("ssh stderr: {}", String::from_utf8_lossy(stderr));
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(&mut stderr);
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(line) => line,
+                    Err(_) => break,
+                };
+                if let Some(rest) = line.strip_prefix("WEZTERM_MUX_DIGEST=sha256:") {
+                    *proxy_digest.lock().unwrap() = Some(rest.trim().to_string());
                 }
+                log::error!("ssh stderr: {}", line);
             }
         });
 
@@ -916,9 +962,10 @@ impl Reconnectable {
         // the proxy, and prevents us from hanging forever after the process
         // has died
         let mut child = exec.child;
+        let cmd_for_log = cmd.clone();
         std::thread::spawn(move || match child.wait() {
-            Err(err) => log::error!("waiting on {} failed: {:#}", cmd, err),
-            Ok(status) if !status.success() => log::error!("{}: {}", cmd, status),
+            Err(err) => log::error!("waiting on {} failed: {:#}", cmd_for_log, err),
+            Ok(status) if !status.success() => log::error!("{}: {}", cmd_for_log, status),
             _ => {}
         });
 
@@ -1244,6 +1291,7 @@ impl Client {
         let client_domain_config = reconnectable.config.clone();
         let is_reconnectable = reconnectable.reconnectable();
         let is_local = reconnectable.is_local();
+        let proxy_digest = reconnectable.proxy_digest.clone();
         let (sender, mut receiver) = unbounded();
         let client_id = ClientId::new();
 
@@ -1340,7 +1388,14 @@ impl Client {
             is_local,
             client_id,
             client_domain_config,
+            proxy_digest,
         }
+    }
+
+    /// The SHA-256 the remote proxy reported on stderr during connection, if it
+    /// has been observed yet.
+    pub fn proxy_reported_digest(&self) -> Option<String> {
+        self.proxy_digest.lock().unwrap().clone()
     }
 
     pub fn into_client_domain_config(self) -> ClientDomainConfig {
@@ -1497,7 +1552,33 @@ impl Client {
         ssh_dom: &SshDomain,
         ui: &mut ConnectionUI,
     ) -> anyhow::Result<Self> {
+        Self::new_ssh_with_intent(local_domain_id, ssh_dom, ui, ConnectIntent::Fresh)
+    }
+
+    /// Connect, but after a failed attach: replace any running daemon and upload
+    /// our bundled mux-server unless `prior_digest` already matches it.
+    pub fn new_ssh_reinstall(
+        local_domain_id: DomainId,
+        ssh_dom: &SshDomain,
+        ui: &mut ConnectionUI,
+        prior_digest: Option<String>,
+    ) -> anyhow::Result<Self> {
+        Self::new_ssh_with_intent(
+            local_domain_id,
+            ssh_dom,
+            ui,
+            ConnectIntent::Reinstall { prior_digest },
+        )
+    }
+
+    fn new_ssh_with_intent(
+        local_domain_id: DomainId,
+        ssh_dom: &SshDomain,
+        ui: &mut ConnectionUI,
+        intent: ConnectIntent,
+    ) -> anyhow::Result<Self> {
         let mut reconnectable = Reconnectable::new(ClientDomainConfig::Ssh(ssh_dom.clone()), None);
+        reconnectable.ssh_intent = intent;
         let no_auto_start = true;
         reconnectable.connect(true, ui, no_auto_start)?;
         Ok(Self::new(Some(local_domain_id), reconnectable))

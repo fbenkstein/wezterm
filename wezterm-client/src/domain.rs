@@ -948,7 +948,8 @@ impl Domain for ClientDomain {
             let ui = ui.clone();
             async move {
                 let mut cloned_ui = ui.clone();
-                let client = spawn_into_new_thread(move || match &config {
+                let config_for_build = config.clone();
+                let client = spawn_into_new_thread(move || match &config_for_build {
                     ClientDomainConfig::Unix(unix) => {
                         let initial = true;
                         let no_auto_start = false;
@@ -966,7 +967,33 @@ impl Domain for ClientDomain {
                 .await?;
 
                 ui.output_str("Checking server version\n");
-                client.verify_version_compat(&ui).await?;
+                let client = match client.verify_version_compat(&ui).await {
+                    Ok(_) => client,
+                    Err(e) => match &config {
+                        // For an ssh domain that manages its mux-server, a failed
+                        // version check usually means the remote binary is stale
+                        // or missing. Upload our bundled copy (unless the proxy
+                        // already reported a matching digest), replace any running
+                        // daemon, and retry once.
+                        ClientDomainConfig::Ssh(ssh) if ssh.install_mux_server => {
+                            let prior = client.proxy_reported_digest();
+                            drop(client);
+                            ui.output_str(
+                                "Server version check failed; \
+                                 deploying wezterm-mux-server and retrying...\n",
+                            );
+                            let ssh = ssh.clone();
+                            let mut cloned_ui = ui.clone();
+                            let client = spawn_into_new_thread(move || {
+                                Client::new_ssh_reinstall(domain_id, &ssh, &mut cloned_ui, prior)
+                            })
+                            .await?;
+                            client.verify_version_compat(&ui).await?;
+                            client
+                        }
+                        _ => return Err(e),
+                    },
+                };
 
                 ui.output_str("Version check OK!  Requesting pane list...\n");
                 let panes = client.list_panes().await?;

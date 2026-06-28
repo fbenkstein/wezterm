@@ -24,7 +24,14 @@ enum SubCmd {
     /// Suitable for use as a proxy_command in WezTerm configuration, or as
     /// a drop-in for `wezterm cli --prefer-mux proxy` when a full wezterm
     /// installation is not available on the remote host.
-    Proxy,
+    Proxy {
+        /// Replace any mux-server already running on this socket: terminate it
+        /// (ending its sessions) before connecting, so that a fresh daemon is
+        /// started from this binary. Used by the client after it has uploaded
+        /// an updated binary.
+        #[arg(long)]
+        replace: bool,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -116,12 +123,13 @@ fn run() -> anyhow::Result<()> {
     let config = config::configuration();
 
     #[cfg(unix)]
-    if let Some(SubCmd::Proxy) = opts.command {
+    if let Some(SubCmd::Proxy { replace }) = &opts.command {
         return proxy::run(
             &config,
             opts.skip_config,
             opts.config_file.as_ref(),
             &opts.config_override,
+            *replace,
         );
     }
 
