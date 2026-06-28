@@ -414,6 +414,19 @@ pub struct Config {
     #[dynamic(default = "default_mux_env_remove")]
     pub mux_env_remove: Vec<String>,
 
+    /// When connected to a multiplexer, the server broadcasts a PaneFocused
+    /// notification to every client whenever pane focus changes - including
+    /// back to the client that initiated the change. Applying that echo can,
+    /// under latency, set up a feedback loop that flickers between tabs when
+    /// switching quickly. Setting this to true makes the client ignore
+    /// incoming PaneFocused notifications entirely. The local effect of your
+    /// own focus changes is unaffected (and the server is still told about
+    /// focus, so focus-reporting escape sequences keep working), but focus
+    /// changes driven by another client or by `wezterm cli activate-*` will
+    /// no longer be reflected in this client.
+    #[dynamic(default)]
+    pub mux_ignore_pane_focus_events: bool,
+
     #[dynamic(default)]
     pub keys: Vec<Key>,
     #[dynamic(default)]
