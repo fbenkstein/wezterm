@@ -428,6 +428,17 @@ impl CommandDef {
             }
         }
 
+        // The "WezTerm <version>" item at the top of the app menu carries the
+        // same weztermPerformKeyAssignment: action as the regular menu commands,
+        // so the removal sweep below would treat it as a candidate. Unlike those
+        // commands it is created once inside the get_or_create_sub_menu closure
+        // and never re-added on a rebuild, so we identify it by this stable
+        // represented item and explicitly spare it (see the set_tag(1) below).
+        let about_represented = RepresentedItem::KeyAssignment(KeyAssignment::CopyTextTo {
+            text: config::wezterm_version().to_string(),
+            destination: ClipboardCopyDestination::ClipboardAndPrimarySelection,
+        });
+
         for &title in &order {
             for cmd in &commands {
                 if cmd.menubar[0] != title {
@@ -449,12 +460,7 @@ impl CommandDef {
                             "",
                         );
                         about_item.set_tool_tip("Click to copy version number");
-                        about_item.set_represented_item(RepresentedItem::KeyAssignment(
-                            KeyAssignment::CopyTextTo {
-                                text: config::wezterm_version().to_string(),
-                                destination: ClipboardCopyDestination::ClipboardAndPrimarySelection,
-                            },
-                        ));
+                        about_item.set_represented_item(about_represented.clone());
 
                         menu.add_item(&about_item);
                         menu.add_item(&MenuItem::new_separator());
@@ -565,6 +571,21 @@ impl CommandDef {
                 // not be removed by the sweep below
                 item.set_tag(1);
             }
+        }
+
+        // Spare the "WezTerm <version>" item from the sweep below: it is only
+        // created on first construction (inside the get_or_create_sub_menu
+        // closure), so on a rebuild it is never re-added and would otherwise be
+        // swept away. Refresh its title to reflect the current version too.
+        if let Some(about_item) = main_menu
+            .item_with_title("WezTerm")
+            .and_then(|item| item.get_sub_menu())
+            .and_then(|wezterm_menu| {
+                wezterm_menu.get_item_with_represented_item(&about_represented)
+            })
+        {
+            about_item.set_title(&format!("WezTerm {}", config::wezterm_version()));
+            about_item.set_tag(1);
         }
 
         // Now sweep away any items that were not updated
