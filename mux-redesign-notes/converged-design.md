@@ -5,9 +5,9 @@
 Draft — the converging design for the multiplexer redesign. Supersedes
 `multiplexer-redesign.md` (the bespoke-codec sketch) and folds in the analysis
 from the replicated-terminal design (determinism, snapshot, local echo, image
-strategy, rollout). The **transport / RPC-framework layer is pending** a
-framework spike (see [Transport](#transport-and-rpc-framework-pending)); the
-rest of this document is transport-independent.
+strategy, rollout). The **transport / RPC-framework layer is now decided** —
+gRPC/tonic (see [Transport](#transport-and-rpc-framework)); the rest of this
+document is transport-independent.
 
 Last updated: 2026-06-29.
 
@@ -173,36 +173,73 @@ topology model with no RPC, eliminating the `TabResized → ListPanes` cascade.
 
 ### Flow control
 
-If the transport is HTTP/2 (gRPC), **per-stream flow control subsumes the
-manual ack + water-mark backpressure** scheme — a slow pane backpressures only
-its own stream (proven in the viability spike), and the server bounds a
-per-stream queue. If the transport keeps the existing communication layer, the
-manual solicited-ack + low/high-water + resync design from the replicated-
-terminal work applies instead. **This choice depends on the transport decision
-below.**
+With the gRPC transport (decided below), **HTTP/2 per-stream flow control
+subsumes the manual ack + water-mark backpressure** scheme — a slow/flooding
+pane backpressures only its own stream (proven in the viability spike), and the
+server bounds a per-stream queue. The manual solicited-ack + low/high-water +
+resync design from the replicated-terminal work is the fallback only if a
+non-HTTP/2 transport is ever chosen.
 
-## Transport and RPC framework (pending)
+## Transport and RPC framework
 
-This is the one open layer. gRPC/tonic is **viable** (all gating experiments
-pass — Unix socket, SSH-stdio-shaped raw stream, ~16µs RTT, HTTP/2 flow control,
-and the in-process tokio↔`promise` bridge). But before committing, a spike is
-evaluating three framings:
+**Decision: gRPC (tonic).** A framework spike compared the options against the
+host constraints (smol + main-thread `!Send` `Mux`, no tokio; transport over SSH
+stdio + Unix sockets; many small interactive messages + high-throughput bursts).
 
-1. **Full gRPC (tonic):** standard IDL, generated/alt-language clients,
-   reflection tooling, HTTP/2 streaming + flow control for free. Cost: a
-   dedicated tokio runtime bridged to the main-thread `promise` executor (proven
-   workable), and `tonic`/`prost` deps (already largely in the lock).
-2. **Other RPC frameworks** (Cap'n Proto RPC, tarpc, volo, ttrpc, …) — may fit
-   the non-tokio host or arbitrary-byte-stream transport better.
-3. **Drop a level:** keep the existing transport/dispatch (Unix/TLS/SSH-stdio,
-   all working, no tokio) and only swap the PDU **body** encoding
-   varbincode → protobuf (prost). Minimal change; keeps smol/promise; loses the
-   gRPC streaming/flow-control framework (we'd keep the existing PDU
-   multiplexing + the manual backpressure design).
+Why gRPC fits *this* design specifically:
 
-The spike's recommendation fills in this section: the framing, the IDL, the
-flow-control mechanism, and the SSH/Unix transport adaptation. Everything above
-is independent of which option wins.
+- **Per-pane stream independence is the real win.** The design pushes output for
+  many panes plus control plus input concurrently. Over a single bespoke
+  connection, one pane dumping output (or a large snapshot) **head-of-line-blocks
+  every other pane's traffic** — a flooding pane delays another pane's keystroke
+  echo. HTTP/2 multiplexes independent streams with per-stream flow control, so a
+  slow/flooding pane backpressures only itself (proven in the viability spike).
+  Matching this on the bespoke transport would mean re-implementing HTTP/2-style
+  per-stream windowing by hand.
+- **The protocol is written in protobuf already** (goal #1), with native
+  unary/server-stream/client-stream/bidi mapping 1:1, plus cross-language
+  clients and grpcurl/reflection tooling.
+- Both required transports are proven: Unix socket directly; SSH stdio over a
+  raw `AsyncRead+AsyncWrite` (h2c + one `Connected` newtype).
+
+The price — real but contained: tonic hard-requires tokio, so the gRPC domain
+runs a **dedicated tokio runtime on its own thread, bridged to the main-thread
+`Mux` over `flume`** (the host runs no tokio — `promise/src/spawn.rs:40`).
+Experiment 9 proved the bridge works cleanly with tidy shutdown, confined to the
+experimental domain.
+
+Alternatives considered:
+
+- **Cap'n Proto RPC — held in reserve.** The *only* framework whose runtime
+  model (`!Send`, single-threaded, `Rc`-based) matches wezterm's main-thread
+  `!Send` `Mux`, so it could run on the existing smol/`promise` main thread with
+  **no second runtime and no bridge** — erasing tonic's one real cost — and its
+  raw-byte-stream transport is even cleaner for SSH stdio. Not the default
+  because it abandons the protobuf IDL, has no first-class streaming or free flow
+  control (hand-built backpressure), and trades ubiquitous gRPC tooling/clients
+  for a niche ecosystem. **Revisit only if the tokio bridge proves too costly in
+  practice**; the deciding experiment would be a short spike driving `RpcSystem`
+  on the `promise` main thread.
+- **Protobuf over the existing transport ("drop a level").** Keep the bespoke
+  framing/dispatch + the working Unix/TLS/SSH transports, swap PDU bodies
+  varbincode → prost; no tokio. A spike confirmed the body codec is cleanly
+  separable (called in 4 places inside the `pdu!` macro) and prost bodies
+  round-trip in the identical leb128 frame with no async runtime. On its own this
+  is a *different goal*: it fixes the **current** mux's versioning pain (retiring
+  the `CODEC_VERSION` hard-fail treadmill, enabling field-level evolution)
+  without delivering the streaming redesign, and it inherits the head-of-line
+  problem above. It's the right near-term move if the itch is "stop breaking the
+  wire on every change," and a viable **no-tokio variant** of the streaming
+  design if avoiding the second runtime ever becomes paramount (build the new
+  streaming PDUs on the existing transport + the manual flow-control design).
+- volo, grpcio, ttrpc, tarpc, JSON-RPC each fail a load-bearing requirement (no
+  runtime win; C-core can't take SSH stdio + native build burden; no HTTP/2 flow
+  control; Rust-only / no IDL; no IDL + poor binary streaming).
+
+Low-regret note: the **prost message definitions are reusable across all three
+viable options**, and serializing `Line`/cell attributes to protobuf is the hard
+part regardless (can start as opaque bytes). So **defining the protobuf schema is
+the right first implementation step** whichever transport finally wins.
 
 ## Rollout and coexistence
 
