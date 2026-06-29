@@ -226,9 +226,17 @@ impl ClientPane {
                 // it here.
                 log::trace!("advised of remote pane focus: {pane_id}");
 
-                let mux = Mux::get();
-                if let Err(err) = mux.focus_pane_and_containing_tab(self.local_pane_id) {
-                    log::error!("Error reconciling remote PaneFocused notification: {err:#}");
+                if configuration().mux_ignore_pane_focus_events {
+                    // The user has opted out of reflecting remote focus
+                    // changes. Ignoring the echo of our own SetFocusedPane
+                    // also breaks the focus feedback loop that flickers
+                    // between tabs when switching quickly under latency.
+                    log::trace!("mux_ignore_pane_focus_events=true; ignoring PaneFocused");
+                } else {
+                    let mux = Mux::get();
+                    if let Err(err) = mux.focus_pane_and_containing_tab(self.local_pane_id) {
+                        log::error!("Error reconciling remote PaneFocused notification: {err:#}");
+                    }
                 }
             }
             _ => bail!("unhandled unilateral pdu: {:?}", pdu),

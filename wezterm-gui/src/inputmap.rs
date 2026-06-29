@@ -449,9 +449,32 @@ impl InputMap {
             None => &self.keys.default,
         };
 
-        table
-            .get(&key.normalize_shift(mods.remove_positional_mods()))
-            .cloned()
+        let mods = mods.remove_positional_mods();
+
+        if let Some(entry) = table.get(&key.normalize_shift(mods)) {
+            return Some(entry.clone());
+        }
+
+        // A shifted symbol such as `}` is delivered with SHIFT still set in the
+        // modifiers even though the shift is already reflected in the character
+        // itself (notably on macOS, where this lookup now also handles menu
+        // key-equivalents). normalize_shift() only folds ASCII letters, so a
+        // binding written as `key="}" mods="SUPER"` would otherwise fail to
+        // match the `}` + SUPER|SHIFT event. Retry once with SHIFT removed.
+        // The character must still match exactly, so this cannot introduce a
+        // spurious match for a key that isn't a shifted symbol; letters are
+        // excluded because normalize_shift already handles their casing.
+        if mods.contains(Modifiers::SHIFT) {
+            if let KeyCode::Char(c) = key {
+                if !c.is_ascii_alphabetic() {
+                    return table
+                        .get(&key.normalize_shift(mods - Modifiers::SHIFT))
+                        .cloned();
+                }
+            }
+        }
+
+        None
     }
 
     pub fn lookup_mouse(

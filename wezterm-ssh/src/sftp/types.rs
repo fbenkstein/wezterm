@@ -296,7 +296,7 @@ mod ssh2_impl {
             }
 
             match opts.write {
-                Some(WriteMode::Write) => flags |= Self::WRITE | Self::TRUNCATE,
+                Some(WriteMode::Write) => flags |= Self::WRITE | Self::TRUNCATE | Self::CREATE,
                 Some(WriteMode::Append) => flags |= Self::WRITE | Self::APPEND | Self::CREATE,
                 None => {}
             }

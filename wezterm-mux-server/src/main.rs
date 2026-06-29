@@ -14,6 +14,26 @@ use wezterm_mux_server_impl::update_mux_domains_for_server;
 
 mod daemonize;
 
+#[cfg(unix)]
+mod proxy;
+
+#[cfg(unix)]
+#[derive(Debug, Subcommand)]
+enum SubCmd {
+    /// Connect to the mux server (starting it if needed) and bridge stdio.
+    /// Suitable for use as a proxy_command in WezTerm configuration, or as
+    /// a drop-in for `wezterm cli --prefer-mux proxy` when a full wezterm
+    /// installation is not available on the remote host.
+    Proxy {
+        /// Replace any mux-server already running on this socket: terminate it
+        /// (ending its sessions) before connecting, so that a fresh daemon is
+        /// started from this binary. Used by the client after it has uploaded
+        /// an updated binary.
+        #[arg(long)]
+        replace: bool,
+    },
+}
+
 #[derive(Debug, Parser)]
 #[command(
     about = "Wez's Terminal Emulator\nhttp://github.com/wezterm/wezterm",
@@ -56,6 +76,10 @@ struct Opt {
     #[arg(long, hide = true)]
     pid_file_fd: Option<i32>,
 
+    #[cfg(unix)]
+    #[command(subcommand)]
+    command: Option<SubCmd>,
+
     /// Instead of executing your shell, run PROG.
     /// For example: `wezterm start -- bash -l` will spawn bash
     /// as if it were a login shell.
@@ -97,6 +121,17 @@ fn run() -> anyhow::Result<()> {
     )?;
 
     let config = config::configuration();
+
+    #[cfg(unix)]
+    if let Some(SubCmd::Proxy { replace }) = &opts.command {
+        return proxy::run(
+            &config,
+            opts.skip_config,
+            opts.config_file.as_ref(),
+            &opts.config_override,
+            *replace,
+        );
+    }
 
     config.update_ulimit()?;
     if let Some(value) = &config.default_ssh_auth_sock {
