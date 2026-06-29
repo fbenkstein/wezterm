@@ -9,6 +9,28 @@ This document is intentionally split into independent sections. Each experiment
 should be executable on its own and should leave behind a short result note,
 prototype branch, benchmark output, or failure report.
 
+## Results so far (2026-06-29)
+
+Driven via two sub-agents — a fit-for-wezterm integration study (read-only,
+against the wezterm tree) and a standalone tonic/prost prototype that ran
+experiments 1–4 for real. **Verdict: gRPC is viable; proceed.** No blocker.
+
+- Gating transport experiments **pass empirically**: Unix socket (exp 1) and a
+  raw `AsyncRead+AsyncWrite` byte-stream stand-in for SSH stdio (exp 2) both
+  work; small-message RTT is ~16 µs (~12 µs over a raw socket), and HTTP/2
+  per-stream flow control isolates a slow reader (exps 3–4).
+- Integration is **viable-with-work, no blocker.** The one real cost is the
+  runtime split: wezterm runs no tokio (it uses smol + a main-thread `promise`
+  executor — see `promise/src/spawn.rs:40`), so the gRPC domain must run its own
+  tokio runtime on a dedicated thread and bridge to the main-thread `Mux` over
+  channels. The deps (`tokio`/`hyper`/`h2`/`tower`/`rustls`) are already in
+  `Cargo.lock`; `tonic`/`prost` add little and conflict with nothing.
+- **Decision:** use vendored protoc or pure-Rust `protox` for codegen — do not
+  add a system `protobuf-compiler` dependency (CI/`get-deps` have none today).
+- **Remaining gate:** Experiment 9 (in-process runtime integration) — the
+  tokio↔main-thread-`promise` bridge is the load-bearing risk a standalone
+  prototype can't prove. In progress.
+
 ## Decision Target
 
 The current protocol draft chooses gRPC over HTTP/2 with protobuf IDL for the
@@ -106,6 +128,26 @@ transport and preserve the current security/deployment shape.
 
 - Short result note with code snippets for server and client setup.
 
+### Result
+
+Date: 2026-06-29
+Branch/prototype: standalone `/tmp/grpc-spike` (tonic 0.12.3, prost 0.13, tokio full)
+Verdict: pass
+
+Findings:
+- All four RPC shapes (unary, server-stream, client-stream, bidi) run over a
+  Unix socket. Server: `serve_with_incoming(UnixListenerStream::new(uds))` —
+  `UnixStream` already implements tonic's `Connected`, so no wrapper is needed.
+  Client: `Endpoint::connect_with_connector(service_fn(|_| UnixStream::connect))`
+  with a dummy URI; the client wraps the stream in `hyper_util::rt::TokioIo`, the
+  server must not (tonic wraps internally).
+- Glue is minimal (a few lines each side).
+
+Follow-up:
+- For production, peer-credential auth (`SO_PEERCRED`/`getpeereid`) is available
+  off the raw `UnixStream` but needs a custom `Connected` impl to surface via
+  tonic `ConnectInfo`. Reuse `safely_create_sock_path` for socket security.
+
 ## Experiment 2: SSH Proxy Transport
 
 ### Question
@@ -148,6 +190,31 @@ Run `Control`, `ReadPane`, and `WritePane` through the selected path.
 - Recommended remote transport shape.
 - Notes on whether stdio transport is viable or whether SSH forwarding/proxying
   is preferred.
+
+### Result
+
+Date: 2026-06-29
+Branch/prototype: standalone `/tmp/grpc-spike`; integration study against the wezterm tree
+Verdict: pass (custom-stream proven; real `ssh --stdio` retest outstanding)
+
+Findings:
+- **The load-bearing transport result.** tonic served and connected over a bare
+  `tokio::io::duplex()` byte pipe — no socket, no listener, no addressing — for
+  all four RPC shapes. tonic speaks HTTP/2 prior-knowledge (h2c) straight onto
+  the stream, so any ordered bidirectional byte stream works. The only glue is
+  one `Connected` newtype on the server delegating `AsyncRead`/`AsyncWrite`, fed
+  via a one-element `serve_with_incoming` stream.
+- Maps directly to SSH: substitute `tokio::process::ChildStdin/ChildStdout` for
+  the duplex halves. wezterm's existing SSH path is already a byte-clean netcat
+  bridge (`wezterm/src/cli/proxy.rs`) piping stdio ↔ a remote Unix socket;
+  HTTP/2 tunnels through it transparently. Recommended: keep the bridge, re-point
+  at the gRPC Unix socket (or adapt `SshStream`, `wezterm-client/src/client.rs:545`,
+  to tokio I/O for a direct stdio transport). No remote TCP exposure needed.
+
+Follow-up:
+- Re-run over a real `ssh host wezterm-mux-server proxy` using
+  `ChildStdin`/`ChildStdout`; confirm SSH pipe close surfaces as a graceful
+  HTTP/2 stream end, not a transport panic.
 
 ## Experiment 3: Streaming Latency and Throughput
 
@@ -199,6 +266,26 @@ Compare against:
 - Benchmark table.
 - Recommended output chunking/coalescing policy.
 
+### Result
+
+Date: 2026-06-29
+Branch/prototype: standalone `/tmp/grpc-spike` (loopback; treat numbers as a floor)
+Verdict: pass
+
+Findings:
+- Interactive round-trip (the keystroke-echo metric), sequential ping→ack: gRPC
+  bidi RTT ~16.5 µs p50 / ~31 µs p99 vs ~5 µs for a raw 1-byte ping-pong — gRPC
+  adds ~12 µs per round-trip, ~3 orders of magnitude under the ~20–30 ms human
+  threshold and lost in network RTT on any real link.
+- Streaming throughput: >2M small msgs/s; ~150 MiB/s at 64 B, ~1 GiB/s at 16 KiB.
+  Raw framing edges gRPC only at 16 KiB (~1.2 vs ~1.0 GiB/s); gRPC beats the
+  naive raw baseline at 1–64 B due to internal batching. Large per-message
+  "latency" at big chunk sizes is burst-queueing, not per-message cost.
+
+Follow-up:
+- Re-measure RTT over a real SSH tunnel (expected to stay in the network-RTT
+  noise).
+
 ## Experiment 4: Flow Control and Slow Clients
 
 ### Question
@@ -246,6 +333,28 @@ Vary:
 
 - Recommended queue/backpressure policy.
 - HTTP/2 tuning values or tuning strategy.
+
+### Result
+
+Date: 2026-06-29
+Branch/prototype: standalone `/tmp/grpc-spike`
+Verdict: pass
+
+Findings:
+- One fast `ReadPane`, one slow `ReadPane` (reads 5 messages then sleeps), and an
+  active bidi `Control` on a single HTTP/2 connection, each with a bounded
+  server-side `mpsc` (cap 32). The slow stream stalled at 5; the fast stream
+  drained 2000/2000 and the control stream stayed fully responsive. HTTP/2
+  WINDOW_UPDATE backpressure held the slow producer on its own stream only — no
+  head-of-line blocking of other panes or control.
+- Consequence: **HTTP/2 per-stream flow control subsumes the manual ack +
+  water-mark backpressure scheme** from the replicated-terminal design; the
+  server just needs a bounded per-stream queue.
+
+Follow-up:
+- Decide the queue-overflow policy: block-producer (tested) vs. drop-and-resync
+  the pane vs. coalesce-to-latest-screen. A protocol-design choice, not a
+  transport limitation.
 
 ## Experiment 5: Snapshot and Blob Payloads
 
@@ -456,6 +565,46 @@ This does not need to implement the full mux protocol.
 
 - Integration notes.
 - List of required production-code touch points.
+
+### Result
+
+Date: 2026-06-29
+Branch/prototype: integration study (read-only) complete; in-process spike in progress
+Verdict: inconclusive — viable-with-work per analysis; empirical spike underway
+
+Findings:
+- wezterm runs **no tokio** in its shipping processes; it uses smol
+  (`async-io`/`async-executor`/`async-task`) plus a main-thread `promise`
+  executor (`promise/src/spawn.rs:40-44` documents why: a GUI app's main-thread
+  loop can't host a tokio/mio reactor). tonic hard-requires tokio. tokio is in
+  the lock only via `sync-color-schemes`/`reqwest`, not linked into
+  wezterm/gui/mux-server.
+- So the gRPC domain must run a **dedicated tokio runtime on its own thread** and
+  bridge to the main-thread `Mux` over channels — matching the existing
+  `smol::channel` fan-in in `wezterm-mux-server-impl/src/dispatch.rs`. `Mux` work
+  is `!Send`/main-thread (`AsyncReadAndWrite` is `async_trait(?Send)`,
+  `wezterm-client/src/client.rs:519`), so the bridge must keep mux-touching work
+  on the main thread.
+- Contained to the experimental domain; no executor refactor. This is the
+  load-bearing risk and the reason for the dedicated in-process spike.
+
+Production-code touch points (from the integration study):
+1. Dedicated tokio runtime host on its own thread, bridged to `Mux` via channels.
+2. New `grpc_servers` config + a `spawn_listener()` branch in
+   `wezterm-mux-server/src/main.rs` (tonic `serve_with_incoming` over a
+   `wezterm_uds::UnixListener`; reuse `safely_create_sock_path`).
+3. New `GrpcClientDomain` implementing `mux/src/domain.rs::Domain`.
+4. New client config + connect variant beside `ClientDomainConfig::{Unix,Tls,Ssh}`
+   (`wezterm-client/src/client.rs:648`).
+5. SSH adapter: re-point `wezterm/src/cli/proxy.rs` / adapt `SshStream` so tonic
+   connects over the SSH stdio byte stream.
+6. Build: `tonic`/`prost` + `build.rs` codegen using vendored protoc or `protox`
+   (no system protobuf-compiler).
+7. A separate proto IDL crate, kept apart from the legacy `codec` crate.
+
+Follow-up:
+- The in-process runtime-bridge spike (Experiment 9) settles whether the
+  tokio↔main-thread-`promise` hand-off is clean in practice.
 
 ## Result Template
 
