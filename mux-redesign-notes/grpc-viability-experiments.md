@@ -27,9 +27,11 @@ experiments 1–4 for real. **Verdict: gRPC is viable; proceed.** No blocker.
   `Cargo.lock`; `tonic`/`prost` add little and conflict with nothing.
 - **Decision:** use vendored protoc or pure-Rust `protox` for codegen — do not
   add a system `protobuf-compiler` dependency (CI/`get-deps` have none today).
-- **Remaining gate:** Experiment 9 (in-process runtime integration) — the
-  tokio↔main-thread-`promise` bridge is the load-bearing risk a standalone
-  prototype can't prove. In progress.
+- **Final gate now cleared:** Experiment 9 (in-process runtime integration)
+  passes — an in-process spike using the real `promise` crate proved a tonic
+  handler on a dedicated tokio thread bridges to the main-thread `promise`
+  executor (via `flume`), computes against `!Send` `Mux`-like state on the main
+  thread, and shuts down cleanly. Viability is settled: **GO.**
 
 ## Decision Target
 
@@ -569,10 +571,27 @@ This does not need to implement the full mux protocol.
 ### Result
 
 Date: 2026-06-29
-Branch/prototype: integration study (read-only) complete; in-process spike in progress
-Verdict: inconclusive — viable-with-work per analysis; empirical spike underway
+Branch/prototype: integration study (read-only) + standalone in-process spike (`/tmp/exp9-spike`, real `promise` path dep)
+Verdict: pass
 
 Findings:
+- **Empirically proven.** The spike runs `promise::spawn::SimpleExecutor` on the
+  main thread (mirroring `wezterm-mux-server/src/main.rs`), a tonic server on a
+  dedicated tokio thread, and bridges a unary handler to the main thread via
+  `flume`: the handler `recv_async`-awaits the reply *inside* the tokio task,
+  while the lookup against `!Send` `Rc<RefCell<HashMap>>` (a `Mux` stand-in)
+  runs on the main thread. Output confirmed `computed_on=ThreadId(1)` (main
+  thread) for hits, correct `NotFound` `Status` propagation for a miss, and
+  `SHUTDOWN COMPLETE: threads joined, no hang, no panic`.
+- **The working pattern:** dedicated `std::thread` owning a multi-thread tokio
+  `Runtime`; `flume` (already a `promise` dep, runtime-agnostic) for both the
+  job channel and a `bounded(1)` reply oneshot; `BridgeJob` carries only `Send`
+  data + the `Send` reply sender, never `!Send` state. Shutdown order that
+  works: client signals graceful server stop → `serve_with_incoming_shutdown`
+  returns → tokio `Runtime` drops **on its own thread, outside any async
+  context** (avoids "runtime dropped in async context") → main loop exits via a
+  `spawn_into_main_thread(async {})` nudge that unblocks the blocking `tick()` →
+  join. No nested-runtime or `block_on`-in-async hazards encountered.
 - wezterm runs **no tokio** in its shipping processes; it uses smol
   (`async-io`/`async-executor`/`async-task`) plus a main-thread `promise`
   executor (`promise/src/spawn.rs:40-44` documents why: a GUI app's main-thread
@@ -603,8 +622,8 @@ Production-code touch points (from the integration study):
 7. A separate proto IDL crate, kept apart from the legacy `codec` crate.
 
 Follow-up:
-- The in-process runtime-bridge spike (Experiment 9) settles whether the
-  tokio↔main-thread-`promise` hand-off is clean in practice.
+- Settled: the tokio↔main-thread-`promise` hand-off is clean. Remaining work is
+  production-shaping (the 7 touch points above), not viability.
 
 ## Result Template
 
