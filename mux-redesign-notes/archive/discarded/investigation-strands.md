@@ -5,7 +5,7 @@ server can be scaffolded with confidence.
 
 ## 1. Proto Codegen Path
 
-Status: **partially done**.
+Status: **done**.
 
 What is settled:
 
@@ -18,7 +18,7 @@ What is settled:
   crate `tonic-prost-build`; use that shape rather than the older
   `tonic-build`-only pattern.
 
-Remaining work:
+Completed work:
 
 - Add workspace dependencies for current `tonic`, `tonic-prost`, `prost`,
   `tonic-prost-build`, and `protox`.
@@ -29,9 +29,8 @@ Remaining work:
   `tonic::include_proto!("wezterm.streaming_mux.v1")`, while keeping the raw
   schema constants useful for tooling.
 - Run `cargo check -p wezterm-grpc-mux-proto` and fix any generated-code issues.
-- Optionally add a tiny compile-only test or smoke module that references both
-  `StreamingMuxClient` and `StreamingMuxServer` so missing service generation is
-  caught early.
+- Add a tiny compile-only test that references both `StreamingMuxClient` and
+  `StreamingMuxServer` so missing service generation is caught early.
 
 Done criteria:
 

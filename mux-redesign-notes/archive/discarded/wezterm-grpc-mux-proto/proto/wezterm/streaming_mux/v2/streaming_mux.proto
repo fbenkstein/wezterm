@@ -1,0 +1,877 @@
+syntax = "proto3";
+
+package wezterm.streaming_mux.v2;
+
+// Experimental gRPC protocol for the side-by-side mux redesign.
+//
+// This is a sibling of v1, kept side-by-side for comparison rather than
+// replacing it. It applies one guiding rule throughout: prefer making invalid
+// states unrepresentable over documenting the invariant and trusting callers
+// to hold it. Concretely, relative to v1:
+//
+// - `ClientHello`/`ServerHello` are no longer a `oneof` branch inside the
+//   `Control` stream. They are their own unary `Hello` RPC. In v1, nothing
+//   stopped a client from sending `ClientHello` twice, or sending it after
+//   other control messages, or the server emitting `ServerHello` mid-stream;
+//   a `oneof` variant can't express "exactly once, and first." A unary RPC
+//   can: it is naturally call-once-per-attempt, and a second call is just a
+//   second independently-validated connection attempt (still subject to
+//   `ReconnectPolicy`), not an ambiguous stream state.
+// - `capabilities` is deleted from both hello messages. Nothing in the
+//   current (non-experimental) mux implementation reads or populates
+//   anything like it, it isn't mentioned in the design notes, and both sides
+//   of this protocol are always built from the same schema (no independent
+//   version skew is planned) -- so there is no "unknown value" case to design
+//   for. An open string set bought speculative flexibility for a problem that
+//   doesn't exist yet. When a concrete negotiable feature shows up, add an
+//   explicit typed field for it, the way `TerminalConfig` already does for
+//   determinism-sensitive settings.
+// - `PaneViewportHash.algorithm` becomes a closed `HashAlgorithm` enum
+//   instead of `string`. Unlike `media_type` (a genuinely open, externally
+//   defined, opaque-to-the-server value), the hash algorithm is drawn from a
+//   small fixed set the server code itself must branch on to compute the
+//   hash, and both sides ship from this schema together, so there is no
+//   unknown-value case to tolerate here either.
+// - `ReadPane`'s `PaneReadEvent` no longer has a `resync_required` variant.
+//   Once a pane's replica can't be continued from where a `ReadPane` call
+//   left off, that call is over -- there is no valid next `PaneReadEvent` on
+//   it. v1 modeled that as one more oneof branch, which meant the invariant
+//   "stop trusting this stream after this event" lived only in a comment. v2
+//   ends the RPC with a distinguished error status
+//   (`ReadPaneResyncRequired` in the error details) instead, so the framework
+//   itself prevents a client from observing anything after it. This requires
+//   a hand-written wrapper on both ends to encode/decode the detail, since
+//   generated stream item types don't have a slot for "the call's own error."
+// - `PaneSummary`, `PaneSnapshot`, `ReadPaneRequest`, and `PaneCheckpoint` all
+//   used to carry `pane_output_seq`/`scrollback_seq` as two independent
+//   `uint64` fields that only mean something as a matched pair minted by the
+//   server at the same instant. Nothing stopped pairing the `pane_output_seq`
+//   from one snapshot with the `scrollback_seq` from another. They are now
+//   one `PaneCursor` value, copied verbatim between the message that handed
+//   it out and the `ReadPaneRequest` that consumes it. `size_seq` stays a
+//   separate field: it's a different axis of state (canonical size, driven
+//   by `ResizePane`), not part of the read-continuation contract.
+//
+// Everything not called out above (session/pane lifecycle RPCs, layout,
+// scrollback/blob reads, the terminal snapshot DTO, cell/color encoding, and
+// the write/input path) is unchanged from v1; only the pieces above needed
+// tightening.
+service StreamingMux {
+  // Handshake. Exactly one call per connection attempt. Establishes
+  // connection_id and negotiates reconnection before any other RPC is made,
+  // so ReconnectPolicy is enforced (and can fail with a plain gRPC status,
+  // e.g. ALREADY_EXISTS) before any stream exists to tear down.
+  //
+  // The server does not need to distinguish "the" control stream from some
+  // hypothetical second one: a second Hello call is just another
+  // independently-validated connection attempt subject to the same
+  // ReconnectPolicy, even though today's client never issues one. Not having
+  // to special-case that in the server is a nice side effect of using a
+  // unary call for something that is naturally call-once.
+  rpc Hello(ClientHello) returns (ServerHello);
+
+  // Long-lived client control channel, opened after Hello. Both sides can
+  // send focus metadata, resync requests, and opaque UI relay messages. There
+  // is no handshake message on this stream: connection_id is always the
+  // value Hello returned.
+  rpc Control(stream ClientControl) returns (stream ServerControl);
+
+  // Session and pane lifecycle.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc AttachSession(AttachSessionRequest) returns (AttachSessionResponse);
+  rpc SpawnPane(SpawnPaneRequest) returns (SpawnPaneResponse);
+  rpc ClosePane(ClosePaneRequest) returns (ClosePaneResponse);
+  rpc ResizePane(ResizePaneRequest) returns (ResizePaneResponse);
+
+  // Opaque client-owned reconnect metadata. Layout is not server-interpreted
+  // topology; it is a blob owned by the persistent client id.
+  rpc GetLayout(GetLayoutRequest) returns (GetLayoutResponse);
+  rpc UpdateLayout(UpdateLayoutRequest) returns (UpdateLayoutResponse);
+
+  // Opaque UI endpoint relay for wezterm-cli-style requests that target GUI
+  // presentation state rather than terminal/session state.
+  rpc ForwardUi(ForwardUiRequest) returns (ForwardUiResponse);
+
+  // Pane terminal state replication.
+  rpc AttachPane(AttachPaneRequest) returns (PaneSnapshot);
+  rpc ReadPane(ReadPaneRequest) returns (stream PaneReadEvent);
+  rpc WritePane(stream PaneInput) returns (WritePaneResponse);
+
+  // Authoritative stores. Large blob chunking is deliberately left as an
+  // implementation/open design detail; the MVP shape starts with unary reads.
+  rpc GetScrollback(GetScrollbackRequest) returns (GetScrollbackResponse);
+  rpc GetBlob(GetBlobRequest) returns (GetBlobResponse);
+}
+
+// Identifies a mux session. A session is the durable server-side container for
+// panes, committed scrollback, blobs, and per-client layout blobs.
+message SessionId {
+  uint64 value = 1;
+}
+
+// Identifies an authoritative server-side pane.
+message PaneId {
+  uint64 value = 1;
+}
+
+// Identifies content-addressed or server-addressed binary data such as encoded
+// image data. The exact id scheme is implementation-defined.
+message BlobId {
+  bytes value = 1;
+}
+
+// Stable client identity for reconnect and persisted layout ownership.
+//
+// The MVP client may hard-code this. The protocol still assumes it exists from
+// the start because adding stable identity later would affect layout ownership,
+// reconnect behavior, and focus cleanup.
+message PersistentClientId {
+  string value = 1;
+}
+
+// Ephemeral id assigned by the server to one accepted transport connection.
+message ConnectionId {
+  uint64 value = 1;
+}
+
+// A focus owner within a connection. One client connection may have multiple
+// focus scopes, for example multiple GUI windows or surfaces.
+message FocusScopeId {
+  ConnectionId connection_id = 1;
+  uint64 local_scope = 2;
+}
+
+message PaneSize {
+  uint32 rows = 1;
+  uint32 cols = 2;
+  uint32 pixel_width = 3;
+  uint32 pixel_height = 4;
+  uint32 dpi = 5;
+}
+
+message BlobRef {
+  BlobId id = 1;
+  uint64 size = 2;
+  string media_type = 3;
+}
+
+// Server-issued continuation point for ReadPane. Always copy this verbatim
+// from a PaneSummary, PaneSnapshot, or PaneCheckpoint received for the same
+// pane_id and pass it back unmodified; the two numbers only mean something as
+// the pair the server minted them as. Mixing a cursor from one pane or one
+// point in time with another produces server-defined (not client-checkable)
+// behavior.
+message PaneCursor {
+  uint64 pane_output_seq = 1;
+  uint64 scrollback_seq = 2;
+}
+
+// Client-chosen reconnect policy for a persistent client id.
+enum ReconnectPolicy {
+  // Reject this connection with ALREADY_EXISTS if another active connection is
+  // already using the same PersistentClientId.
+  RECONNECT_POLICY_REFUSE_IF_ACTIVE = 0;
+
+  // Cancel the previous connection, remove all focus scopes owned by it, close
+  // its streams, and accept this connection as the replacement.
+  RECONNECT_POLICY_TAKE_OVER = 1;
+}
+
+message ClientHello {
+  PersistentClientId persistent_client_id = 1;
+  string wezterm_version = 2;
+  repeated SessionId desired_sessions = 4;
+  ReconnectPolicy reconnect_policy = 5;
+}
+
+message ServerHello {
+  ConnectionId connection_id = 1;
+  string server_version = 2;
+  repeated SessionSummary sessions = 4;
+}
+
+message ClientControl {
+  // Always the connection_id returned by Hello; never empty/zero on this
+  // stream.
+  ConnectionId connection_id = 1;
+
+  oneof message {
+    ClientFocusChanged focus_changed = 11;
+    ClientAck ack = 12;
+    ClientRequestResync request_resync = 13;
+    ForwardedUiResponse forwarded_ui_response = 14;
+  }
+}
+
+message ServerControl {
+  // Orders messages on the control stream only. It does not define a total
+  // order against pane input/output streams or resize RPCs.
+  uint64 control_seq = 1;
+
+  oneof message {
+    PaneCreated pane_created = 11;
+    PaneSizeChanged pane_size_changed = 12;
+    PaneTitleChanged pane_title_changed = 13;
+    PaneExited pane_exited = 14;
+    PaneRemoved pane_removed = 15;
+    NotifyAlert notify_alert = 16;
+    ResyncRequired resync_required = 17;
+    ForwardedUiRequest forwarded_ui_request = 18;
+    PaneMetadataChanged pane_metadata_changed = 19;
+  }
+}
+
+message ClientAck {
+  uint64 control_seq = 1;
+}
+
+message ClientRequestResync {
+  PaneId pane_id = 1;
+  string reason = 2;
+}
+
+// Focus is pane-addressed metadata. The server tracks, for each pane, the set
+// of FocusScopeId values that currently focus it:
+//
+//   focused_by: map<PaneId, set<FocusScopeId>>
+//
+// Terminal focus reporting is edge-triggered:
+//
+// - empty set -> non-empty set: pane.focus_changed(true)
+// - non-empty set -> empty set: pane.focus_changed(false)
+// - adding/removing another scope while non-empty: no terminal focus event
+//
+// On abrupt disconnect, the server removes all focus scopes for that connection
+// and applies the same edge logic. The server must not assume one client can
+// focus only one pane.
+message ClientFocusChanged {
+  FocusScopeId scope_id = 1;
+  PaneId pane_id = 2;
+  bool focused = 3;
+}
+
+message SessionSummary {
+  SessionId session_id = 1;
+  repeated PaneSummary panes = 2;
+}
+
+message PaneSummary {
+  PaneId pane_id = 1;
+  PaneSize canonical_size = 2;
+  uint64 size_seq = 3;
+  PaneCursor cursor = 4;
+
+  // Terminal title convenience field. This is terminal-derived state, not a
+  // GUI tab title.
+  string title = 6;
+  bool exited = 7;
+
+  // Advisory metadata that is useful for reconnect, spawn defaults, and UI.
+  // Clients must not depend on process-inspection-derived values for
+  // correctness.
+  PaneMetadata metadata = 8;
+}
+
+message CreateSessionRequest {
+  PersistentClientId persistent_client_id = 1;
+}
+
+message CreateSessionResponse {
+  SessionSummary session = 1;
+}
+
+message AttachSessionRequest {
+  SessionId session_id = 1;
+}
+
+message AttachSessionResponse {
+  SessionSummary session = 1;
+}
+
+message SpawnPaneRequest {
+  SessionId session_id = 1;
+  PaneSize requested_size = 2;
+  SpawnCommand command = 3;
+  TerminalConfig terminal_config = 4;
+}
+
+message SpawnPaneResponse {
+  PaneSummary pane = 1;
+}
+
+message SpawnCommand {
+  repeated string argv = 1;
+  map<string, string> env = 2;
+  string cwd = 3;
+}
+
+// The determinism-sensitive terminal configuration slice supplied by the
+// client. This is intentionally small for the first schema pass; it should be
+// expanded from the full TerminalSnapshot/TerminalState inventory as
+// implementation starts.
+message TerminalConfig {
+  uint32 scrollback_lines = 1;
+  bool enable_kitty_graphics = 2;
+  bool enable_kitty_keyboard = 3;
+  bool enable_csi_u_key_encoding = 4;
+  bool normalize_output_to_unicode_nfc = 5;
+  string unicode_version = 6;
+  BidiMode bidi_mode = 7;
+}
+
+enum BidiMode {
+  BIDI_MODE_UNSPECIFIED = 0;
+  BIDI_MODE_DISABLED = 1;
+  BIDI_MODE_LEFT_TO_RIGHT = 2;
+  BIDI_MODE_RIGHT_TO_LEFT = 3;
+}
+
+message ClosePaneRequest {
+  PaneId pane_id = 1;
+}
+
+message ClosePaneResponse {
+  PaneId pane_id = 1;
+}
+
+message ResizePaneRequest {
+  PaneId pane_id = 1;
+  PaneSize requested_size = 2;
+  uint64 client_resize_seq = 3;
+}
+
+message ResizePaneResponse {
+  PaneId pane_id = 1;
+  uint64 client_resize_seq = 2;
+  uint64 size_seq = 3;
+  PaneSize canonical_size = 4;
+  ResizeStatus status = 5;
+}
+
+message PaneSizeChanged {
+  PaneId pane_id = 1;
+  uint64 size_seq = 2;
+  PaneSize canonical_size = 3;
+
+  // Present when the size change was caused by a request on a live mux
+  // connection. Clients may use this for diagnostics or to suppress redundant
+  // local work, but server correctness must not rely on UI echoes.
+  ConnectionId origin_connection_id = 4;
+}
+
+enum ResizeStatus {
+  RESIZE_STATUS_UNSPECIFIED = 0;
+  RESIZE_STATUS_ACCEPTED = 1;
+  RESIZE_STATUS_REJECTED = 2;
+}
+
+message PaneCreated {
+  SessionId session_id = 1;
+  PaneSummary pane = 2;
+}
+
+message PaneRemoved {
+  PaneId pane_id = 1;
+}
+
+message PaneTitleChanged {
+  PaneId pane_id = 1;
+  string title = 2;
+}
+
+message PaneMetadataChanged {
+  PaneId pane_id = 1;
+  PaneMetadata metadata = 2;
+}
+
+// Miscellaneous pane metadata that is useful to clients but not part of the
+// core replication contract.
+//
+// Values derived from terminal escape sequences, such as OSC 7 cwd, are
+// terminal state. Values derived by host process inspection are advisory:
+// they can be stale, unavailable, OS-specific, and potentially sensitive. The
+// server may use them for fallback behavior such as spawn-in-current-directory,
+// but clients must not require them for correctness.
+//
+// Prompt/input/output information is intentionally not represented as an
+// at_prompt boolean. It is encoded as SemanticType on cells/rows, so clients can
+// derive prompt-oriented UI from the replicated terminal state.
+message PaneMetadata {
+  // Current working directory URL, usually from OSC 7. If absent/empty, the
+  // server may still have an advisory process-inspection fallback internally.
+  string current_working_dir = 1;
+  MetadataSource current_working_dir_source = 2;
+
+  // Foreground process name or executable path, if cheaply available. Advisory.
+  string foreground_process_name = 3;
+  MetadataSource foreground_process_name_source = 4;
+
+  // Terminal device name, if available. Advisory and OS-specific.
+  string tty_name = 5;
+  MetadataSource tty_name_source = 6;
+}
+
+enum MetadataSource {
+  METADATA_SOURCE_UNSPECIFIED = 0;
+  METADATA_SOURCE_TERMINAL_ESCAPE = 1;
+  METADATA_SOURCE_PROCESS_INSPECTION = 2;
+  METADATA_SOURCE_SPAWN_REQUEST = 3;
+  METADATA_SOURCE_SERVER_DEFAULT = 4;
+}
+
+message PaneExited {
+  PaneId pane_id = 1;
+  int32 exit_code = 2;
+  string reason = 3;
+}
+
+message NotifyAlert {
+  PaneId pane_id = 1;
+  AlertKind kind = 2;
+  string text = 3;
+
+  // Escape hatch for alerts whose shape is still inherited from existing
+  // WezTerm internals and has not been lifted into schema fields yet.
+  bytes opaque_payload = 100;
+}
+
+enum AlertKind {
+  ALERT_KIND_UNSPECIFIED = 0;
+  ALERT_KIND_BELL = 1;
+  ALERT_KIND_OUTPUT_SINCE_FOCUS_LOST = 2;
+  ALERT_KIND_PROGRESS = 3;
+  ALERT_KIND_USER_VAR = 4;
+  ALERT_KIND_TOAST = 5;
+}
+
+// Advisory: this pane will need a fresh AttachPane/ReadPane the next time the
+// client reads or attaches it. Unlike ReadPaneResyncRequired (see ReadPane),
+// this can be sent for a pane the client isn't currently streaming at all --
+// for example an unfocused background pane -- so it is a repeatable
+// broadcast-style notification on Control, not something that ends a call.
+message ResyncRequired {
+  PaneId pane_id = 1;
+  string reason = 2;
+}
+
+// Opaque client-owned reconnect metadata. The server stores it by
+// PersistentClientId, returns the accepted revision, and emits no layout
+// events. Layout can only be changed by a connected client.
+message ClientLayout {
+  uint64 revision = 1;
+  string media_type = 2;
+  bytes data = 3;
+}
+
+message GetLayoutRequest {
+  PersistentClientId persistent_client_id = 1;
+}
+
+message GetLayoutResponse {
+  ClientLayout layout = 1;
+}
+
+message UpdateLayoutRequest {
+  PersistentClientId persistent_client_id = 1;
+  uint64 expected_revision = 2;
+  string media_type = 3;
+  bytes data = 4;
+}
+
+message UpdateLayoutResponse {
+  uint64 revision = 1;
+}
+
+// Opaque UI request from a CLI endpoint to an eligible connected client.
+// If no target is supplied and exactly one eligible client is connected, the
+// server may route to it. If multiple clients are eligible, the request is
+// ambiguous and must fail unless a target is supplied. The server does not
+// inspect the payload.
+message ForwardUiRequest {
+  PersistentClientId target_persistent_client_id = 1;
+  string media_type = 2;
+  bytes data = 3;
+}
+
+message ForwardUiResponse {
+  UiForwardStatus status = 1;
+  string error_message = 2;
+  bytes data = 3;
+}
+
+message ForwardedUiRequest {
+  uint64 request_id = 1;
+  string media_type = 2;
+  bytes data = 3;
+}
+
+message ForwardedUiResponse {
+  uint64 request_id = 1;
+  UiForwardStatus status = 2;
+  string error_message = 3;
+  bytes data = 4;
+}
+
+enum UiForwardStatus {
+  UI_FORWARD_STATUS_UNSPECIFIED = 0;
+  UI_FORWARD_STATUS_OK = 1;
+  UI_FORWARD_STATUS_REFUSED = 2;
+  UI_FORWARD_STATUS_NO_RECEIVER = 3;
+  UI_FORWARD_STATUS_AMBIGUOUS_RECEIVER = 4;
+  UI_FORWARD_STATUS_ERROR = 5;
+}
+
+message AttachPaneRequest {
+  PaneId pane_id = 1;
+}
+
+// Snapshot of authoritative pane state at an exact continuation cursor.
+//
+// The server must capture the snapshot and the stream continuation point in one
+// critical section at a clean parser boundary. ReadPane with start_after set to
+// this cursor must provide exact continuation with no missed or duplicated PTY
+// output bytes.
+message PaneSnapshot {
+  PaneId pane_id = 1;
+  PaneCursor cursor = 2;
+  uint64 size_seq = 4;
+  PaneSize canonical_size = 5;
+  TerminalSnapshot terminal = 6;
+  repeated BlobRef blobs = 7;
+  PaneMetadata metadata = 8;
+}
+
+message ReadPaneRequest {
+  PaneId pane_id = 1;
+
+  // A cursor previously handed to this client for this pane_id, via
+  // PaneSummary, PaneSnapshot, or PaneCheckpoint. The zero value means "from
+  // the beginning."
+  PaneCursor start_after = 2;
+}
+
+message PaneReadEvent {
+  PaneId pane_id = 1;
+
+  oneof event {
+    PtyOutput output = 10;
+    ScrollbackCommit scrollback_commit = 11;
+    ScrollbackClear scrollback_clear = 12;
+    ScrollbackDropBefore scrollback_drop_before = 13;
+    PaneViewportHash viewport_hash = 14;
+    PaneCheckpoint checkpoint = 15;
+    ClipboardChanged clipboard_changed = 17;
+  }
+}
+
+// One PTY read equals one PtyOutput event equals one advance_bytes call on every
+// replica. Do not re-chunk until the grapheme-flush caveat is fixed.
+message PtyOutput {
+  uint64 pane_output_seq = 1;
+  bytes data = 2;
+}
+
+// Both sides of this protocol are always built from this schema together, so
+// the set of algorithms the server might pick is closed and known at compile
+// time on both ends -- there is no "client built against an older schema
+// receives an algorithm it can't name" case to design for.
+enum HashAlgorithm {
+  HASH_ALGORITHM_UNSPECIFIED = 0;
+  HASH_ALGORITHM_XXH3 = 1;
+  HASH_ALGORITHM_FXHASH = 2;
+}
+
+message PaneViewportHash {
+  uint64 pane_output_seq = 1;
+  uint64 hash = 2;
+  HashAlgorithm algorithm = 3;
+}
+
+message PaneCheckpoint {
+  PaneCursor cursor = 1;
+  uint64 size_seq = 2;
+}
+
+// Sent as a gRPC error status (with this message packed into the status
+// details, e.g. via a `google.rpc.Status`/tonic `Status` metadata entry) that
+// ends the ReadPane call, rather than as a PaneReadEvent. Once a pane's
+// replica can't be continued from where this call left off, there is no valid
+// next PaneReadEvent for it, so the invariant "stop trusting this stream now"
+// is enforced by the RPC ending rather than by a data event the client has to
+// remember to treat specially. Recover by calling AttachPane again and
+// starting a new ReadPane from the returned cursor.
+//
+// Encoding/decoding this into the generated Status type is expected to live
+// in a small hand-written wrapper around the generated ReadPane client and
+// server code; tonic's generated bindings don't have a slot for "the call's
+// own structured error" beyond raw status details bytes.
+message ReadPaneResyncRequired {
+  PaneId pane_id = 1;
+  string reason = 2;
+}
+
+// Terminal-originated OSC 52 clipboard mutation. The server does not store
+// clipboard contents. Clients decide whether/how to apply the request.
+message ClipboardChanged {
+  ClipboardSelection selection = 1;
+
+  oneof action {
+    string set_text = 10;
+    bool clear = 11;
+  }
+}
+
+enum ClipboardSelection {
+  CLIPBOARD_SELECTION_UNSPECIFIED = 0;
+  CLIPBOARD_SELECTION_CLIPBOARD = 1;
+  CLIPBOARD_SELECTION_PRIMARY = 2;
+}
+
+// Protocol DTO for reconstructing a shadow terminal at a clean continuation
+// point. This is not a serialized Rust TerminalState. The exact field set must
+// be driven by the full state inventory; opaque_terminal_state is a temporary
+// escape hatch while the DTO is sharpened.
+message TerminalSnapshot {
+  PaneSize size = 1;
+  uint64 viewport_top_row_id = 2;
+  uint64 cursor_row_id = 3;
+  uint32 cursor_col = 4;
+  CursorState cursor = 5;
+  TerminalModes modes = 6;
+  ColorPalette palette = 7;
+  repeated SnapshotRow viewport_rows = 8;
+  repeated CommittedRow recent_scrollback = 9;
+  repeated BlobRef blobs = 10;
+
+  // OSC 8 hyperlink active in the pen at the snapshot boundary. Output after
+  // attach may inherit this until the terminal app clears or replaces it.
+  Hyperlink active_hyperlink = 11;
+
+  // TODO: replace with explicit fields for margins, saved cursor, charsets, tab
+  // stops, scroll region, alt-screen, unicode-version stack, kitty image
+  // counters, stable_row_index_offset, and other TerminalState inventory.
+  bytes opaque_terminal_state = 100;
+}
+
+message TerminalModes {
+  bool application_cursor_keys = 1;
+  bool application_keypad = 2;
+  bool bracketed_paste = 3;
+  bool focus_reporting = 4;
+  bool mouse_reporting = 5;
+
+  // TODO: replace with explicit mode fields as the snapshot DTO is completed.
+  bytes opaque_modes = 100;
+}
+
+message CursorState {
+  CursorShape shape = 1;
+  CursorVisibility visibility = 2;
+  bool blink = 3;
+}
+
+enum CursorShape {
+  CURSOR_SHAPE_UNSPECIFIED = 0;
+  CURSOR_SHAPE_BLOCK = 1;
+  CURSOR_SHAPE_UNDERLINE = 2;
+  CURSOR_SHAPE_BAR = 3;
+}
+
+enum CursorVisibility {
+  CURSOR_VISIBILITY_UNSPECIFIED = 0;
+  CURSOR_VISIBILITY_VISIBLE = 1;
+  CURSOR_VISIBILITY_HIDDEN = 2;
+}
+
+message SnapshotRow {
+  uint64 row_id = 1;
+  uint32 source_cols = 2;
+  bool soft_wrapped_to_next = 3;
+  repeated CellRun runs = 4;
+  repeated BlobRef blobs = 5;
+  repeated Hyperlink hyperlinks = 6;
+}
+
+message CommittedRow {
+  uint64 row_id = 1;
+  uint32 source_cols = 2;
+  bool soft_wrapped_to_next = 3;
+  repeated CellRun runs = 4;
+  repeated BlobRef blobs = 5;
+  repeated Hyperlink hyperlinks = 6;
+}
+
+message CellRun {
+  // UTF-8 text for the run.
+  string text = 1;
+  CellAttrs attrs = 2;
+
+  // Cell width of the run, needed for wide characters and spacing.
+  uint32 width = 3;
+}
+
+message CellAttrs {
+  Color fg_color = 1;
+  Color bg_color = 2;
+  Color underline_color = 3;
+  Intensity intensity = 4;
+  Underline underline = 5;
+  bool italic = 6;
+  Blink blink = 7;
+  bool reverse = 8;
+  bool strikethrough = 9;
+  bool invisible = 10;
+  bool overline = 11;
+  SemanticType semantic_type = 12;
+
+  // 0 means no hyperlink. Otherwise this is 1 + index into the row's
+  // hyperlinks table, preserving shared hyperlink identity without repeating
+  // the URI on every cell.
+  uint32 hyperlink_index = 13;
+}
+
+message Color {
+  oneof value {
+    bool default_color = 1;
+    uint32 palette_index = 2;
+    uint32 true_color_rgb = 3;
+  }
+}
+
+enum Intensity {
+  INTENSITY_UNSPECIFIED = 0;
+  INTENSITY_NORMAL = 1;
+  INTENSITY_BOLD = 2;
+  INTENSITY_HALF = 3;
+}
+
+enum Underline {
+  UNDERLINE_UNSPECIFIED = 0;
+  UNDERLINE_NONE = 1;
+  UNDERLINE_SINGLE = 2;
+  UNDERLINE_DOUBLE = 3;
+  UNDERLINE_CURLY = 4;
+  UNDERLINE_DOTTED = 5;
+  UNDERLINE_DASHED = 6;
+}
+
+enum Blink {
+  BLINK_UNSPECIFIED = 0;
+  BLINK_NONE = 1;
+  BLINK_SLOW = 2;
+  BLINK_RAPID = 3;
+}
+
+enum SemanticType {
+  SEMANTIC_TYPE_UNSPECIFIED = 0;
+  SEMANTIC_TYPE_OUTPUT = 1;
+  SEMANTIC_TYPE_PROMPT = 2;
+  SEMANTIC_TYPE_INPUT = 3;
+}
+
+message Hyperlink {
+  string uri = 1;
+  map<string, string> params = 2;
+}
+
+message ColorPalette {
+  repeated RgbColor colors = 1;
+  RgbColor foreground = 2;
+  RgbColor background = 3;
+  RgbColor cursor_fg = 4;
+  RgbColor cursor_bg = 5;
+  RgbColor cursor_border = 6;
+  RgbColor selection_fg = 7;
+  RgbColor selection_bg = 8;
+  RgbColor scrollbar_thumb = 9;
+  RgbColor split = 10;
+  RgbColor compose_cursor = 11;
+}
+
+message RgbColor {
+  uint32 red = 1;
+  uint32 green = 2;
+  uint32 blue = 3;
+}
+
+// Input is explicitly pane-addressed. Ordering is guaranteed within one
+// WritePane stream, but not relative to ReadPane output or ResizePane RPCs.
+message PaneInput {
+  PaneId pane_id = 1;
+  uint64 client_input_seq = 2;
+
+  oneof input {
+    bytes raw_bytes = 10;
+    KeyEvent key = 11;
+    MouseEvent mouse = 12;
+    Paste paste = 13;
+  }
+}
+
+message WritePaneResponse {
+  PaneId pane_id = 1;
+  uint64 last_client_input_seq = 2;
+}
+
+// Placeholder key representation. The production mapping should follow the
+// existing wezterm input model rather than freezing this shape prematurely.
+message KeyEvent {
+  string key = 1;
+  uint32 modifiers = 2;
+  string raw_encoding_hint = 3;
+}
+
+message MouseEvent {
+  uint32 x = 1;
+  uint32 y = 2;
+  uint32 button = 3;
+  uint32 modifiers = 4;
+  MouseEventKind kind = 5;
+}
+
+enum MouseEventKind {
+  MOUSE_EVENT_KIND_UNSPECIFIED = 0;
+  MOUSE_EVENT_KIND_PRESS = 1;
+  MOUSE_EVENT_KIND_RELEASE = 2;
+  MOUSE_EVENT_KIND_DRAG = 3;
+  MOUSE_EVENT_KIND_MOVE = 4;
+  MOUSE_EVENT_KIND_WHEEL = 5;
+}
+
+message Paste {
+  string text = 1;
+}
+
+message ScrollbackCommit {
+  uint64 scrollback_seq = 1;
+  repeated CommittedRow rows = 2;
+}
+
+message ScrollbackClear {
+  uint64 scrollback_seq = 1;
+}
+
+message ScrollbackDropBefore {
+  uint64 scrollback_seq = 1;
+  uint64 first_retained_row_id = 2;
+}
+
+message GetScrollbackRequest {
+  PaneId pane_id = 1;
+  uint64 start_row_id = 2;
+  uint64 limit = 3;
+}
+
+message GetScrollbackResponse {
+  uint64 scrollback_seq = 1;
+  repeated CommittedRow rows = 2;
+}
+
+message GetBlobRequest {
+  BlobId id = 1;
+}
+
+message GetBlobResponse {
+  BlobRef blob = 1;
+  bytes data = 2;
+}

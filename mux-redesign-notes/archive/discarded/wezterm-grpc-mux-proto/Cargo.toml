@@ -1,0 +1,17 @@
+[package]
+name = "wezterm-grpc-mux-proto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+prost.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+
+[build-dependencies]
+protox.workspace = true
+tonic-prost-build.workspace = true

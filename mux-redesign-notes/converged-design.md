@@ -5,10 +5,11 @@
 Draft — the converging design for the multiplexer redesign. Supersedes
 `multiplexer-redesign.md` (the bespoke-codec sketch) and folds in the analysis
 from the replicated-terminal design (determinism, snapshot, local echo, image
-strategy, rollout). The **transport / RPC-framework layer is now decided** —
-gRPC/tonic (see [Transport](#transport-and-rpc-framework)). The authoritative
-schema now lives in
-`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`;
+strategy, rollout). The transport branch that followed this note was later
+paused and moved to `archive/discarded/`. Treat this document as the semantic
+background, not as the source of truth for the transport choice. The archived
+schema lives in
+`archive/discarded/wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`;
 the rest of this document is transport-independent design context.
 
 Last updated: 2026-06-29.
@@ -257,14 +258,11 @@ Alternatives considered:
   runtime win; C-core can't take SSH stdio + native build burden; no HTTP/2 flow
   control; Rust-only / no IDL; no IDL + poor binary streaming).
 
-Low-regret note: the **prost message definitions are reusable across all three
-viable options**, and serializing `Line`/cell attributes to protobuf is the hard
-part regardless. The first schema now exists in
-`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`;
-the next implementation step is wiring codegen and the experimental server.
-Use current tonic/prost/protox tooling with pure-Rust `protox`; do not choose an
-older codegen stack just to preserve the current MSRV during this experimental
-phase.
+Low-regret note: the **prost message definitions were reusable across the
+active options**, and serializing `Line`/cell attributes to protobuf was the
+hard part regardless. The first schema now lives in
+`archive/discarded/wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`;
+this paragraph is historical context, not a current implementation directive.
 
 ## Rollout and coexistence
 

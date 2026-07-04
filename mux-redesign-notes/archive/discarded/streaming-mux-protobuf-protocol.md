@@ -6,7 +6,7 @@ The authoritative protocol draft has moved from this markdown sketch to the
 protobuf schema:
 
 ```text
-../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto
+wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto
 ```
 
 This note remains as a short guide to the design intent behind that schema. Do
