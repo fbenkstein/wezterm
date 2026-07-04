@@ -12,7 +12,7 @@ responsiveness. Motivation: the current pull model makes resize O(scrollback)
 and synchronous (tens-of-second hangs after a day of use), carries heavy
 pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 
-## Current state (2026-06-29)
+## Current state (2026-07-04)
 
 - **Design: converging.** [`converged-design.md`](converged-design.md) is the
   current design and the thing to read first. Its replication core is written;
@@ -23,6 +23,11 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
   [`grpc-viability-experiments.md`](grpc-viability-experiments.md). gRPC chosen
   over Cap'n Proto RPC (the reserve option) and "protobuf-over-existing-
   transport" (a different goal — near-term versioning fix).
+- **Protocol schema: started.** The authoritative protobuf/gRPC schema now
+  lives in
+  [`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`](../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto).
+  [`streaming-mux-protobuf-protocol.md`](streaming-mux-protobuf-protocol.md) is
+  now an index/design-intent note pointing at that schema.
 - **Nothing implemented yet** — this is all design/spike work.
 - **Cross-branch note:** the deeper replicated-terminal analysis (determinism
   contract, snapshot inventory, local-echo overlay, image strategy, rollout)
@@ -37,7 +42,8 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 |---|---|---|
 | [`converged-design.md`](converged-design.md) | The reconciled design: replication core + the gRPC transport decision. **Read first.** | **Active — source of truth** |
 | [`grpc-viability-experiments.md`](grpc-viability-experiments.md) | gRPC viability experiment plan + recorded results (verdict: GO). | **Active — settled** |
-| [`streaming-mux-protobuf-protocol.md`](streaming-mux-protobuf-protocol.md) | The gRPC/protobuf protocol sketch — service/IDL/message detail (resources, streams, snapshot, resize, scrollback). | Active reference (protocol detail behind the converged design) |
+| [`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`](../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto) | The authoritative protobuf/gRPC schema for the experimental mux. | **Active — protocol source** |
+| [`streaming-mux-protobuf-protocol.md`](streaming-mux-protobuf-protocol.md) | Short protocol intent/index note that points to the `.proto`. | Active reference |
 | [`multiplexer-redesign.md`](multiplexer-redesign.md) | The original bespoke-codec shadow-emulator redesign — detailed perf analysis, testing strategy, implementation sketch. | Superseded by `converged-design.md`; useful background |
 | [`protobuf-protocol-design.md`](protobuf-protocol-design.md) | Protobuf as a *body encoding* over the existing transport ("drop a level"). | Superseded for the new streaming impl; still relevant as the near-term versioning-fix option |
 | [`mux-protocol-and-tmux-comparison.md`](mux-protocol-and-tmux-comparison.md) | Reference: the *current* wire format (framing, varbincode, transports) + native-mux-vs-`tmux -CC` comparison. | Reference / background |
@@ -50,18 +56,18 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 1. This file.
 2. [`converged-design.md`](converged-design.md) — the design.
 3. [`grpc-viability-experiments.md`](grpc-viability-experiments.md) — why gRPC, and what's proven.
-4. [`streaming-mux-protobuf-protocol.md`](streaming-mux-protobuf-protocol.md) — protocol/IDL detail.
-5. The rest as needed for background (`multiplexer-redesign.md`), the current
+4. [`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`](../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto) — protocol/IDL detail.
+5. [`streaming-mux-protobuf-protocol.md`](streaming-mux-protobuf-protocol.md) — protocol intent/index note.
+6. The rest as needed for background (`multiplexer-redesign.md`), the current
    protocol (`mux-protocol-and-tmux-comparison.md`), or adjacent tracks.
 
 ## Possible next steps
 
 Not a committed plan — options, roughly ordered by how directly they advance the redesign:
 
-1. **Define the protobuf schema / IDL crate.** The low-regret first
-   implementation step: the message definitions are reusable across transport
-   options, and `Line`/cell serialization is the shared hard part regardless
-   (can start as opaque bytes).
+1. **Wire codegen for `wezterm-grpc-mux-proto`.** The schema crate exists and
+   owns the `.proto`; the next step is tonic/prost generation using vendored
+   protoc or `protox`, without requiring a system protobuf compiler.
 2. **Prototype the experimental gRPC domain** end-to-end — the 7 production
    touch points from the viability study (tokio runtime + `flume` bridge, server
    listener, `GrpcClientDomain`, client config/connect, SSH adapter, build

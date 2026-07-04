@@ -7,6 +7,7 @@ members = [
   "deps/cairo",
   "wezterm",
   "wezterm-blob-leases",
+  "wezterm-grpc-mux-proto",
   "wezterm-cell",
   "wezterm-escape-parser",
   "wezterm-dynamic",

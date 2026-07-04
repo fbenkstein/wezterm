@@ -6,8 +6,10 @@ Draft — the converging design for the multiplexer redesign. Supersedes
 `multiplexer-redesign.md` (the bespoke-codec sketch) and folds in the analysis
 from the replicated-terminal design (determinism, snapshot, local echo, image
 strategy, rollout). The **transport / RPC-framework layer is now decided** —
-gRPC/tonic (see [Transport](#transport-and-rpc-framework)); the rest of this
-document is transport-independent.
+gRPC/tonic (see [Transport](#transport-and-rpc-framework)). The authoritative
+schema now lives in
+`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`;
+the rest of this document is transport-independent design context.
 
 Last updated: 2026-06-29.
 
@@ -16,15 +18,15 @@ Last updated: 2026-06-29.
 Mux clients run a full `wezterm_term::Terminal` **shadow emulator** fed by an
 ordered stream of raw PTY-output bytes from the server, instead of polling for
 pre-rendered cells. The server stays the authoritative emulator (for attach,
-reconnect, topology, committed scrollback, blob storage). Clients render from
-their own replica and speculate locally for responsiveness, converging to
+reconnect, pane lifecycle, committed scrollback, blob storage). Clients render
+from their own replica and speculate locally for responsiveness, converging to
 server authority via snapshots, a viewport hash, and explicit resync.
 
 This is the same model two independent passes arrived at; this document is the
 reconciliation. It carries forward the deep findings of the replicated-terminal
-work and adds the three things that work surfaced as gaps: **viewport-hash
-drift detection**, a **committed-scrollback log**, and **structural/topology
-events**.
+work and adds the things that work surfaced as gaps: **viewport-hash drift
+detection**, a **committed-scrollback log**, explicit pane lifecycle events, and
+opaque client-owned layout persistence.
 
 ## Motivation
 
@@ -60,14 +62,19 @@ across input/output/resize/control; replacing the current mux immediately
 ## Architecture: responsibility split
 
 - **Server owns:** PTY + process lifecycle; the authoritative `Terminal`;
-  canonical pane/tab sizes; tab/pane topology; committed scrollback; blob/image
-  storage; reconnect snapshots; server-originated commands (e.g. forwarded
-  `wezterm cli activate-pane`).
-- **Client owns:** UI windows, rendering, the shadow `Terminal`, the predictive
-  overlay, local resize speculation, local active-pane selection, config
-  interpretation.
+  canonical pane sizes; pane lifecycle; committed scrollback; blob/image
+  storage; reconnect snapshots; opaque layout blobs keyed by persistent client
+  id; per-pane focus membership sets that drive terminal focus events.
+- **Client owns:** UI windows, tabs, split layout, zoom, overlays, rendering,
+  the shadow `Terminal`, the predictive overlay, local resize speculation,
+  active tab/pane selection, config interpretation.
 
 Input is **pane-addressed**; focus is metadata, not input routing.
+
+The server informs clients about authoritative terminal/session facts. It does
+not command client UI. `wezterm cli` requests that target UI/presentation state
+are forwarded opaquely to an eligible connected client; the mux server does not
+inspect or implement them.
 
 ## The replication core
 
@@ -164,12 +171,26 @@ soft-wrap metadata initially; more reflowable representation later) and
 replicates them as a `scrollback_seq`-ordered log (commit / clear / drop-before).
 This decouples authoritative history from the speculative live view.
 
-### Structural / topology events
+### Pane lifecycle, focus, and layout
 
-Topology changes (splits, closes, moves, focus, layout) are pushed as explicit
-**structural events** (`PaneAdded/Removed`, `TabCreated/Closed`,
-`PaneResized`, `FocusChanged`, `SplitLayout`) so the client updates its local
-topology model with no RPC, eliminating the `TabResized → ListPanes` cascade.
+Pane lifecycle changes are pushed as explicit authoritative facts (`PaneCreated`,
+`PaneRemoved`, `PaneExited`, `PaneSizeChanged`, title/alert updates) so clients
+can update their local presentation without a broad `ListPanes` poll.
+
+Focus is not a server-owned active pane. The server tracks, for each pane, the
+set of client focus scopes that currently focus it. Terminal focus reporting is
+edge-triggered by empty-set transitions: empty -> non-empty sends focus-in to
+the application; non-empty -> empty sends focus-out; adding another focused
+client/scope does not send another focus-in. On abrupt disconnect the server
+removes that connection's focus scopes and applies the same edge logic.
+
+Tabs, split trees, and GUI windows are client-owned layout/presentation state,
+not authoritative mux resources. For reconnect, the server persists an opaque
+layout blob keyed by persistent client id, updated by the owner client via an
+explicit request/response. The MVP has no layout events: a lost or delayed
+layout update is recoverable because terminal state remains authoritative.
+Future read-only/follower clients and layout cloning should remain possible, but
+are not part of the MVP protocol.
 
 ### Flow control
 
@@ -238,8 +259,9 @@ Alternatives considered:
 
 Low-regret note: the **prost message definitions are reusable across all three
 viable options**, and serializing `Line`/cell attributes to protobuf is the hard
-part regardless (can start as opaque bytes). So **defining the protobuf schema is
-the right first implementation step** whichever transport finally wins.
+part regardless. The first schema now exists in
+`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`;
+the next implementation step is wiring codegen and the experimental server.
 
 ## Rollout and coexistence
 

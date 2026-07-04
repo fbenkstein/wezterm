@@ -7022,6 +7022,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wezterm-grpc-mux-proto"
+version = "0.1.0"
+
+[[package]]
 name = "wezterm-gui"
 version = "0.1.0"
 dependencies = [
