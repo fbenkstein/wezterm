@@ -42,6 +42,7 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 |---|---|---|
 | [`converged-design.md`](converged-design.md) | The reconciled design: replication core + the gRPC transport decision. **Read first.** | **Active — source of truth** |
 | [`grpc-viability-experiments.md`](grpc-viability-experiments.md) | gRPC viability experiment plan + recorded results (verdict: GO). | **Active — settled** |
+| [`investigation-strands.md`](investigation-strands.md) | Status tracker for the investigations needed before scaffolding the experimental mock server. | **Active — implementation tracker** |
 | [`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`](../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto) | The authoritative protobuf/gRPC schema for the experimental mux. | **Active — protocol source** |
 | [`streaming-mux-protobuf-protocol.md`](streaming-mux-protobuf-protocol.md) | Short protocol intent/index note that points to the `.proto`. | Active reference |
 | [`multiplexer-redesign.md`](multiplexer-redesign.md) | The original bespoke-codec shadow-emulator redesign — detailed perf analysis, testing strategy, implementation sketch. | Superseded by `converged-design.md`; useful background |
@@ -56,9 +57,10 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 1. This file.
 2. [`converged-design.md`](converged-design.md) — the design.
 3. [`grpc-viability-experiments.md`](grpc-viability-experiments.md) — why gRPC, and what's proven.
-4. [`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`](../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto) — protocol/IDL detail.
-5. [`streaming-mux-protobuf-protocol.md`](streaming-mux-protobuf-protocol.md) — protocol intent/index note.
-6. The rest as needed for background (`multiplexer-redesign.md`), the current
+4. [`investigation-strands.md`](investigation-strands.md) — open work before the mock server scaffold.
+5. [`../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`](../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto) — protocol/IDL detail.
+6. [`streaming-mux-protobuf-protocol.md`](streaming-mux-protobuf-protocol.md) — protocol intent/index note.
+7. The rest as needed for background (`multiplexer-redesign.md`), the current
    protocol (`mux-protocol-and-tmux-comparison.md`), or adjacent tracks.
 
 ## Current implementation decisions
