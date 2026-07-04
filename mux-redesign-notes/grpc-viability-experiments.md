@@ -25,8 +25,13 @@ experiments 1–4 for real. **Verdict: gRPC is viable; proceed.** No blocker.
   tokio runtime on a dedicated thread and bridge to the main-thread `Mux` over
   channels. The deps (`tokio`/`hyper`/`h2`/`tower`/`rustls`) are already in
   `Cargo.lock`; `tonic`/`prost` add little and conflict with nothing.
-- **Decision:** use vendored protoc or pure-Rust `protox` for codegen — do not
-  add a system `protobuf-compiler` dependency (CI/`get-deps` have none today).
+- **Decision:** use pure-Rust `protox` for codegen — do not add a system
+  `protobuf-compiler` dependency (CI/`get-deps` have none today).
+- **Tooling decision, 2026-07-04:** prefer current tonic/prost/protox tooling
+  even if it raises the repo's current MSRV while the redesign is experimental.
+  Revisit MSRV only when preparing an upstream contribution or release path;
+  do not spend effort on old-codegen compatibility unless that becomes a real
+  constraint.
 - **Final gate now cleared:** Experiment 9 (in-process runtime integration)
   passes — an in-process spike using the real `promise` crate proved a tonic
   handler on a dedicated tokio thread bridges to the main-thread `promise`
@@ -617,8 +622,8 @@ Production-code touch points (from the integration study):
    (`wezterm-client/src/client.rs:648`).
 5. SSH adapter: re-point `wezterm/src/cli/proxy.rs` / adapt `SshStream` so tonic
    connects over the SSH stdio byte stream.
-6. Build: `tonic`/`prost` + `build.rs` codegen using vendored protoc or `protox`
-   (no system protobuf-compiler).
+6. Build: current `tonic`/`prost` + `build.rs` codegen using `protox` (no
+   system protobuf-compiler).
 7. A separate proto IDL crate, kept apart from the legacy `codec` crate.
 
 Follow-up:

@@ -61,13 +61,25 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 6. The rest as needed for background (`multiplexer-redesign.md`), the current
    protocol (`mux-protocol-and-tmux-comparison.md`), or adjacent tracks.
 
+## Current implementation decisions
+
+- **Codegen/tooling, 2026-07-04:** prefer current tonic/prost tooling with
+  pure-Rust `protox` over compatibility-constrained older crate versions or a
+  host `protoc` dependency. If the current tooling raises WezTerm's declared
+  MSRV, accept that for this experimental branch and revisit only near upstream
+  contribution or release hardening. Current tooling is expected to be the less
+  risky path while the protocol and mock server are still taking shape.
+- **Decision process:** when a fork has significant effort on both paths and
+  meaningful migration cost later, stop and ask instead of silently choosing the
+  conservative compatibility path.
+
 ## Possible next steps
 
 Not a committed plan — options, roughly ordered by how directly they advance the redesign:
 
 1. **Wire codegen for `wezterm-grpc-mux-proto`.** The schema crate exists and
-   owns the `.proto`; the next step is tonic/prost generation using vendored
-   protoc or `protox`, without requiring a system protobuf compiler.
+   owns the `.proto`; the next step is tonic/prost generation using current
+   tooling and `protox`, without requiring a system protobuf compiler.
 2. **Prototype the experimental gRPC domain** end-to-end — the 7 production
    touch points from the viability study (tokio runtime + `flume` bridge, server
    listener, `GrpcClientDomain`, client config/connect, SSH adapter, build

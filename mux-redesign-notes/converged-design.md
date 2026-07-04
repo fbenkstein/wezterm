@@ -262,6 +262,9 @@ viable options**, and serializing `Line`/cell attributes to protobuf is the hard
 part regardless. The first schema now exists in
 `../wezterm-grpc-mux-proto/proto/wezterm/streaming_mux/v1/streaming_mux.proto`;
 the next implementation step is wiring codegen and the experimental server.
+Use current tonic/prost/protox tooling with pure-Rust `protox`; do not choose an
+older codegen stack just to preserve the current MSRV during this experimental
+phase.
 
 ## Rollout and coexistence
 
