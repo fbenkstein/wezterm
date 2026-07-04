@@ -158,6 +158,7 @@ message ServerControl {
     NotifyAlert notify_alert = 16;
     ResyncRequired resync_required = 17;
     ForwardedUiRequest forwarded_ui_request = 18;
+    PaneMetadataChanged pane_metadata_changed = 19;
   }
 }
 
@@ -201,8 +202,16 @@ message PaneSummary {
   uint64 size_seq = 3;
   uint64 pane_output_seq = 4;
   uint64 scrollback_seq = 5;
+
+  // Terminal title convenience field. This is terminal-derived state, not a
+  // GUI tab title.
   string title = 6;
   bool exited = 7;
+
+  // Advisory metadata that is useful for reconnect, spawn defaults, and UI.
+  // Clients must not depend on process-inspection-derived values for
+  // correctness.
+  PaneMetadata metadata = 8;
 }
 
 message CreateSessionRequest {
@@ -310,6 +319,46 @@ message PaneRemoved {
 message PaneTitleChanged {
   PaneId pane_id = 1;
   string title = 2;
+}
+
+message PaneMetadataChanged {
+  PaneId pane_id = 1;
+  PaneMetadata metadata = 2;
+}
+
+// Miscellaneous pane metadata that is useful to clients but not part of the
+// core replication contract.
+//
+// Values derived from terminal escape sequences, such as OSC 7 cwd, are
+// terminal state. Values derived by host process inspection are advisory:
+// they can be stale, unavailable, OS-specific, and potentially sensitive. The
+// server may use them for fallback behavior such as spawn-in-current-directory,
+// but clients must not require them for correctness.
+//
+// Prompt/input/output information is intentionally not represented as an
+// at_prompt boolean. It is encoded as SemanticType on cells/rows, so clients can
+// derive prompt-oriented UI from the replicated terminal state.
+message PaneMetadata {
+  // Current working directory URL, usually from OSC 7. If absent/empty, the
+  // server may still have an advisory process-inspection fallback internally.
+  string current_working_dir = 1;
+  MetadataSource current_working_dir_source = 2;
+
+  // Foreground process name or executable path, if cheaply available. Advisory.
+  string foreground_process_name = 3;
+  MetadataSource foreground_process_name_source = 4;
+
+  // Terminal device name, if available. Advisory and OS-specific.
+  string tty_name = 5;
+  MetadataSource tty_name_source = 6;
+}
+
+enum MetadataSource {
+  METADATA_SOURCE_UNSPECIFIED = 0;
+  METADATA_SOURCE_TERMINAL_ESCAPE = 1;
+  METADATA_SOURCE_PROCESS_INSPECTION = 2;
+  METADATA_SOURCE_SPAWN_REQUEST = 3;
+  METADATA_SOURCE_SERVER_DEFAULT = 4;
 }
 
 message PaneExited {
@@ -427,6 +476,7 @@ message PaneSnapshot {
   PaneSize canonical_size = 5;
   TerminalSnapshot terminal = 6;
   repeated BlobRef blobs = 7;
+  PaneMetadata metadata = 8;
 }
 
 message ReadPaneRequest {
