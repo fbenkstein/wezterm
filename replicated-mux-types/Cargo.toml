@@ -1,0 +1,16 @@
+[package]
+name = "replicated-mux-types"
+version = "0.1.0"
+authors = ["Wez Furlong <wez@wezfurlong.org>"]
+edition = "2021"
+repository = "https://github.com/wezterm/wezterm"
+description = "Transport-agnostic semantic types for the replicated mux redesign"
+license = "MIT"
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+wezterm-input-types.workspace = true

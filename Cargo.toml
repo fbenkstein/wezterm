@@ -5,6 +5,7 @@ members = [
   "strip-ansi-escapes",
   "sync-color-schemes",
   "deps/cairo",
+  "replicated-mux-types",
   "wezterm",
   "wezterm-blob-leases",
   "wezterm-cell",
@@ -181,6 +182,7 @@ raw-window-handle = "0.6"
 rayon = "1.10"
 rcgen = "0.12"
 regex = "1"
+replicated-mux-types = { path = "replicated-mux-types" }
 reqwest = "0.12"
 resize = "0.5"
 rstest = "0.21"
