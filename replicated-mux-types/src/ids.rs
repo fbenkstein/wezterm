@@ -19,13 +19,25 @@ macro_rules! newtype_id {
 newtype_id!(PaneId, "Identifies a pane on the authoritative server.");
 newtype_id!(
     SessionId,
-    "Identifies a mux session (a connection's authenticated identity)."
+    "Identifies a `MuxSession`: an ephemeral, connection-scoped container \
+     a client uses to manage its own pane subscriptions (get/create/\
+     close). Panes are not grouped or owned by sessions at the server -- \
+     any number of sessions, on any number of connections, may attach the \
+     same `PaneId`. A session does not survive its connection closing, so \
+     unlike `ClientId` this is not meant to be stable across reconnects."
 );
 newtype_id!(
     ClientId,
     "A persistent client identity, stable across reconnects. Used to key \
      reconnect and layout-blob state to \"the same client\" rather than to \
      a particular connection."
+);
+newtype_id!(
+    ConnectionId,
+    "Ephemeral id assigned by the server to one accepted transport \
+     connection. Distinct from `ClientId`: a single persistent `ClientId` \
+     may be associated with many `ConnectionId`s over its lifetime (one at \
+     a time), as it reconnects."
 );
 
 /// Orders output events within a single pane's stream. The authoritative

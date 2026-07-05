@@ -12,5 +12,6 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 thiserror.workspace = true
 wezterm-input-types.workspace = true

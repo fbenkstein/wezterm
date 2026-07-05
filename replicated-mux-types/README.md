@@ -20,6 +20,18 @@ encoding is chosen:
 - [`OutputEvent`], [`InputEvent`], [`ControlEvent`], [`PaneLifecycleEvent`] —
   the traffic that crosses the boundary.
 - [`LayoutBlob`] — opaque, client-owned layout persistence.
+- [`MuxClient`] / [`MuxConnection`] / [`MuxSession`] / [`MuxPane`] /
+  [`MuxPaneTombstone`] — the client-side connection topology built out of
+  the above: connect, discover panes and open a session, then create or
+  get panes (live or, if the process already exited, a read-only
+  tombstone), then read/write one pane's terminal. A session is an
+  ephemeral, connection-scoped container for a client's own pane
+  subscriptions, not a server-owned grouping — panes aren't grouped at
+  the server at all.
+- [`InterfaceVersions`] / [`ImplementationVersion`] / [`PeerVersions`] —
+  version negotiation at connect time: a semver-numbered interface-version
+  axis that `connect()` can refuse on, kept separate from an
+  advisory-only implementation-version axis that is allowed to drift.
 
 It does not implement a terminal emulator, a wire format, or an RPC
 framework. See `mux-redesign-notes/mux-design-restart.md` and

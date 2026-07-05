@@ -114,9 +114,20 @@ pub enum PaneLifecycleEvent {
         pane_id: PaneId,
         dims: PaneDims,
     },
+    /// A tombstone for `pane_id` was explicitly dismissed (see
+    /// `crate::client::MuxPaneTombstone::dismiss`) and the id is now gone
+    /// for good -- no `get_pane` will ever succeed for it again. This
+    /// is *not* fired when the pane's process exits; that's `Exited`,
+    /// below.
     Removed {
         pane_id: PaneId,
     },
+    /// The pane's process exited. The pane does not disappear: it becomes
+    /// a tombstone (see `crate::client::MuxPaneTombstone`) whose final
+    /// properties and content remain readable but which no longer accepts
+    /// input, resizes, or produces further output. It stays a tombstone,
+    /// occupying `pane_id`, until a client calls `dismiss` on it (see
+    /// `Removed`) -- it is not garbage-collected on its own.
     Exited {
         pane_id: PaneId,
         exit_code: Option<i32>,
