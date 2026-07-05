@@ -12,7 +12,7 @@ responsiveness. Motivation: the current pull model makes resize O(scrollback)
 and synchronous (tens-of-second hangs after a day of use), carries heavy
 pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 
-## Current state (2026-07-04)
+## Current state (2026-07-05)
 
 - **Design reset.** [`mux-design-restart.md`](mux-design-restart.md) is the
   current entry point and the thing to read first.
@@ -22,7 +22,18 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 - **Archived branch.** The protobuf/gRPC branch, its proto crate, and the
   gRPC-specific investigation notes now live under
   [`archive/discarded/`](archive/discarded/).
-- **Nothing implemented yet** — this is still design/spike work.
+- **First Rust API pass exists.** The `replicated-mux-types` crate (repo root)
+  names the semantic core in Rust: the replication boundary (ids, events,
+  snapshot, the authoritative/replica terminal role split, layout blobs,
+  interface/implementation version negotiation) and, in `src/client.rs`, the
+  client-side connection topology (`MuxClient -> MuxConnection ->
+  MuxSession -> MuxPane`/`MuxPaneTombstone`). No transport, no
+  implementation — traits and DTOs only.
+- **A review found real gaps in that first pass.**
+  [`client-api-review-findings.md`](client-api-review-findings.md) lists
+  them (most serious: no operation returns a pane's initial/resync
+  snapshot, and `ControlEvent`/`PaneLifecycleEvent` are unreachable from
+  the client API). Status: open, blocking further depth until addressed.
 - **Cross-branch note:** the deeper replicated-terminal analysis (determinism
   contract, snapshot inventory, local-echo overlay, image strategy, rollout)
   lives in `docs/mux-replicated-terminal-design.md` on the
@@ -36,6 +47,7 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 |---|---|---|
 | [`mux-design-restart.md`](mux-design-restart.md) | Summary of the current conclusion and next-step order. | **Active — entry point** |
 | [`converged-design.md`](converged-design.md) | The replicated-terminal semantic design and historical transport discussion. | **Active — background** |
+| [`client-api-review-findings.md`](client-api-review-findings.md) | Gaps/modeling errors found reviewing `replicated-mux-types`' client-to-pane API. | **Active — open, blocking** |
 | [`archive/discarded/README.md`](archive/discarded/README.md) | Index of the protobuf/gRPC branch and other discarded notes. | **Active — archive index** |
 | [`multiplexer-redesign.md`](multiplexer-redesign.md) | The original bespoke-codec shadow-emulator redesign — detailed perf analysis, testing strategy, implementation sketch. | Superseded by `converged-design.md`; useful background |
 | [`mux-protocol-and-tmux-comparison.md`](mux-protocol-and-tmux-comparison.md) | Reference: the *current* wire format (framing, varbincode, transports) + native-mux-vs-`tmux -CC` comparison. | Reference / background |
@@ -63,7 +75,11 @@ pre-rendered cells on the wire, and bolts on predictive echo as a hack.
 
 Not a committed plan — options, roughly ordered by how directly they advance the redesign:
 
-1. **Define the Rust API and traits** for the mux semantic model.
+1. **Resolve [`client-api-review-findings.md`](client-api-review-findings.md)**
+   before going deeper on `replicated-mux-types` — the planned next depth
+   pass (pane details, event flow, snapshot/scrollback representation) is
+   expected to surface more findings that loop back into the same list, so
+   the current ones should be settled first.
 2. **Productionize the determinism golden test** (replicated-terminal step 1) —
    the spike already validated it; harden it as a permanent test.
 3. **The `term` grapheme-flush fix** — move grapheme clustering off the per-call
