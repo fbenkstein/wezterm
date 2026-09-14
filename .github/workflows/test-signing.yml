@@ -1,0 +1,50 @@
+name: Test signing
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sign-test:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Build, package, sign, and notarize
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          cd "$RUNNER_TEMP"
+          cargo new --bin hello-sign-test
+          cd hello-sign-test
+          cargo build --release
+
+          APP="$RUNNER_TEMP/HelloSignTest.app"
+          mkdir -p "$APP/Contents/MacOS"
+          cp target/release/hello-sign-test "$APP/Contents/MacOS/HelloSignTest"
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleIdentifier</key>
+              <string>net.benkstein.hello-sign-test</string>
+              <key>CFBundleExecutable</key>
+              <string>HelloSignTest</string>
+              <key>CFBundleName</key>
+              <string>HelloSignTest</string>
+              <key>CFBundleVersion</key>
+              <string>1.0.0</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0.0</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+          </dict>
+          </plist>
+          PLIST
+
+          bash "$GITHUB_WORKSPACE/.github/scripts/sign-and-notarize.sh" "$APP"
