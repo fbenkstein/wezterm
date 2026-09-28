@@ -1,0 +1,90 @@
+# Builds a universal (ARM + Intel) macOS .app and uploads it as a workflow
+# artifact. Core logic lives in .github/scripts/build-macos.sh, which is also
+# runnable locally given the required tools (cargo, lipo, tic, zip, codesign).
+name: Build macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or commit to build'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '10.12'
+      CARGO_INCREMENTAL: '0'
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+
+      - name: Install Rust targets
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad  # v0.0.9
+
+      - name: Cache Cargo vendor
+        id: vendor-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: |
+            vendor
+            .cargo/config
+          key: cargo-vendor-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Vendor dependencies
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
+        run: cargo vendor --locked --versioned-dirs >> .cargo/config
+
+      - name: Compute build tag
+        id: tag
+        run: |
+          TAG=$(git -c core.abbrev=8 show -s --format=%cd-%h --date=format:%Y%m%d-%H%M%S)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and package
+        env:
+          TAG_NAME: ${{ steps.tag.outputs.tag }}
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash .github/scripts/build-macos.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: WezTerm-macos-${{ steps.tag.outputs.tag }}-signed-notarized
+          path: WezTerm-*.zip
+          retention-days: 14
+
+      - name: Run summary
+        run: |
+          {
+            echo "## Build complete"
+            echo ""
+            echo "Artifact: \`WezTerm-macos-${{ steps.tag.outputs.tag }}-signed-notarized\`"
+            echo ""
+            echo "After downloading and unzipping:"
+            echo ""
+            echo '```'
+            echo 'cd WezTerm-macos-${{ steps.tag.outputs.tag }}'
+            echo 'xattr -cr WezTerm.app'
+            echo 'open WezTerm.app'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
