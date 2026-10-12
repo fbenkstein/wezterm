@@ -1,0 +1,54 @@
+# Keeps this fork's main branch in sync with upstream (wez/wezterm) while
+# preserving a custom .github/ from the orphan `dot-github` branch.
+#
+# Strategy: build the merge commit with pure git plumbing in a bare repo —
+# no checkout required. The result is always exactly one commit on top of
+# upstream/main (force-pushed), so fork history stays clean and
+# `git log --first-parent` shows unmodified upstream history.
+name: Sync with upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+    steps:
+      - name: Init bare repo and fetch
+        run: |
+          git init --bare repo.git
+          git -C repo.git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git -C repo.git remote add upstream https://github.com/wez/wezterm.git
+          git -C repo.git fetch origin refs/heads/dot-github:refs/remotes/origin/dot-github
+          git -C repo.git fetch upstream refs/heads/main:refs/remotes/upstream/main
+
+      - name: Build and push merge commit
+        working-directory: repo.git
+        run: |
+          set -x
+
+          # Build tree: upstream/main root entries with .github replaced from dot-github
+          GITHUB_TREE=$(git rev-parse origin/dot-github:.github)
+          TREE=$(
+            { git ls-tree upstream/main | grep -v $'\t\.github$'
+              printf '040000 tree %s\t.github\n' "$GITHUB_TREE"
+            } | git mktree
+          )
+
+          COMMIT=$(git commit-tree "$TREE" \
+            -p "$(git rev-parse upstream/main)" \
+            -p "$(git rev-parse origin/dot-github)" \
+            -m "chore: sync with upstream [skip ci]")
+
+          # Force push: fork/main is always exactly one merge commit ahead of upstream/main
+          git push origin "$COMMIT:refs/heads/main" --force
