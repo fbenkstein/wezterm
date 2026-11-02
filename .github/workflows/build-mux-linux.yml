@@ -1,0 +1,41 @@
+# Builds statically-linked wezterm-mux-server binaries for Linux musl targets.
+# Each target is an independent job. Artifacts are uploaded per target and can
+# be consumed by combined build workflows.
+name: Build Linux mux server
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or commit to build'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+
+      - uses: taiki-e/install-action@e69be69e81342df335337f42bdade9e42a00bc67  # cross
+
+      - name: Build
+        run: bash .github/scripts/build-mux-linux.sh ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: mux-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/wezterm-mux-server
+          retention-days: 5

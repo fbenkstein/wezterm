@@ -1,0 +1,12 @@
+# cross-rs config, kept inside .github/ so the fork stays a pure overlay.
+# build-mux-linux.sh points CROSS_CONFIG at this file.
+#
+# Why pre-build: the musl *target* openssl-sys is handled by the
+# `openssl/vendored` cargo feature (built from source). But `wezterm-version`
+# has a *build-dependency* on git2 -> libgit2-sys -> openssl-sys, which compiles
+# for the x86_64-gnu *host* inside the cross container. That host build needs a
+# real OpenSSL to link against, so install it (and pkg-config) in the container.
+[build]
+pre-build = [
+    "apt-get update && apt-get install --assume-yes --no-install-recommends libssl-dev pkg-config",
+]
